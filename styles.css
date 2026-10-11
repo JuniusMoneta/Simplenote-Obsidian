@@ -1,0 +1,26 @@
+/* Simplenote Sync */
+.simplenote-sync-log {
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+	white-space: pre-wrap;
+	max-height: 60vh;
+	overflow: auto;
+	user-select: text;
+}
+.simplenote-sync-list {
+	max-height: 40vh;
+	overflow: auto;
+	font-size: var(--font-smaller);
+}
+.simplenote-sync-list li {
+	margin: 0;
+}
+.simplenote-sync-status-error {
+	color: var(--text-error);
+}
+.simplenote-sync-buttons {
+	display: flex;
+	gap: var(--size-4-2);
+	justify-content: flex-end;
+	margin-top: var(--size-4-4);
+}
