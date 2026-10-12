@@ -105,6 +105,14 @@ posts again against the current version.
   The encoding (space → `_`, `,` → `%2C`, `%` → `%25`) is kept because the website's tag input strips
   spaces and commas, so a tag with a space could not be retyped on the web.
 
+- **auth.simperium.com renegotiates TLS mid-request** (seen with `curl -v` on Windows: "schannel: renegotiating
+  SSL/TLS connection" twice before the response). Chromium refuses renegotiation, so `requestUrl` on desktop
+  fails with `ERR_CONNECTION_CLOSED`; .NET's `Invoke-RestMethod` fails too. Node's TLS and curl accept it.
+  The plugin therefore sends the login request through Node `https` on desktop (guarded; falls back to
+  `requestUrl` on mobile) and offers a paste-a-token field. `api.simperium.com` does not renegotiate and
+  works from Chromium. This is the one deliberate exception to the "no Node APIs" rule; it is feature-detected
+  and never runs on mobile.
+
 ### Still to check by eye on the Simplenote website
 
 - Whether `[Title](simplenote://note/<id>)` opens the note when clicked (link translation, M7).

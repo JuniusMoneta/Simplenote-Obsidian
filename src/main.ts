@@ -1,9 +1,9 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile, debounce } from 'obsidian';
-import { obsidianHttp } from './http';
+import { nodeHttpsOrNull, obsidianHttp } from './http';
 import { Logger } from './log';
 import { ObsidianVault } from './obsidian-vault';
 import { DEFAULT_SETTINGS, errorMessage, MIN_SYNC_INTERVAL, SimplenoteSettingTab, SimplenoteSyncSettings } from './settings';
-import { SimperiumClient } from './simperium';
+import { SimperiumClient, type HttpFn } from './simperium';
 import { normalizeState, type StateStore, type SyncState } from './state';
 import { SyncEngine, type SyncStatus } from './sync';
 import { confirmPlan, firstRunDialog, LogModal } from './ui';
@@ -163,11 +163,11 @@ export default class SimplenoteSyncPlugin extends Plugin {
 
 	// ----- account -----
 
-	newClient(maxRetries?: number): SimperiumClient {
+	newClient(maxRetries?: number, http: HttpFn = obsidianHttp): SimperiumClient {
 		return new SimperiumClient({
 			appId: this.settings.appId,
 			apiKey: this.settings.apiKey,
-			http: obsidianHttp,
+			http,
 			token: this.app.secretStorage.getSecret(TOKEN_SECRET_ID) ?? undefined,
 			log: (m) => this.log.debug(`http: ${m}`),
 			maxRetries,
@@ -179,8 +179,9 @@ export default class SimplenoteSyncPlugin extends Plugin {
 	}
 
 	async login(email: string, password: string): Promise<void> {
-		this.log.info(`login: requesting a token for ${email} from ${this.settings.appId}`);
-		const probe = this.newClient(0); // login: one attempt, fail fast
+		const nodeHttps = nodeHttpsOrNull();
+		this.log.info(`login: requesting a token for ${email} from ${this.settings.appId} via ${nodeHttps ? 'Node https (desktop)' : 'requestUrl'}`);
+		const probe = this.newClient(0, nodeHttps ?? obsidianHttp); // login: one attempt, fail fast
 		let token: string;
 		try {
 			token = await probe.authorize(email, password);

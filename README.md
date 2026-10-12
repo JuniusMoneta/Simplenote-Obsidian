@@ -93,15 +93,21 @@ without an id stay as text. **Turn it on or off on every device at the same time
 
 ## Login problems
 
-"Log in" talks to `auth.simperium.com` once to get a token. If that host is unreachable from Obsidian
-(the sync log shows `ERR_CONNECTION_TIMED_OUT`), get the token from a terminal that can reach it and paste
-it into "Paste a token instead" in the plugin settings. After that the plugin only uses `api.simperium.com`.
+"Log in" talks to `auth.simperium.com` once to get a token. That host renegotiates TLS during the request,
+which Chromium refuses (`ERR_CONNECTION_CLOSED`), so on desktop the plugin sends this one request through
+Node's HTTPS stack, which accepts it. Everything else goes through Obsidian's `requestUrl`.
+
+If login still fails (the sync log shows `ERR_CONNECTION_TIMED_OUT` or `ERR_CONNECTION_CLOSED`), get the
+token from a terminal and paste it into "Paste a token instead" in the plugin settings. After that the
+plugin only uses `api.simperium.com`. Note: on Windows use `curl.exe`, not `Invoke-RestMethod`, which
+also refuses the renegotiation.
 
 PowerShell (replace the email and password):
 
 ```
-$body = @{ username = "you@example.com"; password = "your password" } | ConvertTo-Json
-(Invoke-RestMethod -Method Post -Uri "https://auth.simperium.com/1/chalk-bump-f49/authorize/" -Headers @{ "X-Simperium-API-Key" = "c8c2b86337154cdabc989b23e30c6bf4" } -ContentType "application/json" -Body $body).access_token
+[IO.File]::WriteAllText("$env:TEMP\sn.json", '{"username":"you@example.com","password":"your password"}')
+curl.exe -sS -X POST https://auth.simperium.com/1/chalk-bump-f49/authorize/ -H "X-Simperium-API-Key: c8c2b86337154cdabc989b23e30c6bf4" -H "Content-Type: application/json" --data-binary "@$env:TEMP\sn.json"
+Remove-Item "$env:TEMP\sn.json"
 ```
 
 macOS or Linux:
