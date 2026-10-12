@@ -22,7 +22,7 @@ export const DEFAULT_SETTINGS: SimplenoteSyncSettings = {
 	email: '',
 	syncIntervalSeconds: 30,
 	excludedFolders: [],
-	maxNoteSizeKb: 190,
+	maxNoteSizeKb: 200,
 	dryRun: false,
 	debugLogging: false,
 	translateLinks: false,

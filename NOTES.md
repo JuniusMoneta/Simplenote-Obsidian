@@ -94,9 +94,10 @@ posts again against the current version.
   index is case-insensitive (`tag-hash.ts`), so the plugin keeps comparing tags case-insensitively and skips
   a second folder that differs from another only by case. How the website *displays* tags with spaces or
   commas is still to be checked by eye (see below).
-- **Maximum note size:** 200 KB of content accepted, 500 KB rejected with HTTP 413. The exact limit lies in
-  between (re-run itest for a finer probe: 250/300/400 KB). Default maximum note size set to 190 KB.
-  A 413 on push is logged as a warning and the file is skipped until it shrinks.
+- **Maximum note size:** second run: 100 to 500 KB accepted, 1000 KB rejected with HTTP 413 (a first run had
+  rejected 500 KB once, so the limit is not sharp; the Electron importer's 1,000,000-byte cap is the likely
+  value). Default maximum note size stays at 200 KB, well below. A 413 on push is logged as a warning and
+  the file is skipped until it shrinks.
 
 - **Website tag display (checked by eye, screenshot 2026-10-12):** every stored tag is shown verbatim on the
   note, including `obsidian:with space`, `obsidian:comma,here`, `obsidian:emoji😀`, `obsidian:café`,
