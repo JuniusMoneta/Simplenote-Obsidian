@@ -75,6 +75,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		});
 
 		this.addSettingTab(new SimplenoteSettingTab(this.app, this));
+		this.applyPropertyVisibility();
 		this.addRibbonIcon('refresh-cw', 'Simplenote: sync now', () => {
 			void this.syncNow('ribbon');
 		});
@@ -130,6 +131,11 @@ export default class SimplenoteSyncPlugin extends Plugin {
 
 	onunload(): void {
 		if (this.timer !== null) window.clearInterval(this.timer);
+		document.body.removeClass('simplenote-sync-hide-props');
+	}
+
+	applyPropertyVisibility(): void {
+		document.body.toggleClass('simplenote-sync-hide-props', this.settings.hideProperties);
 	}
 
 	private registerIntervalSafe(fn: () => void, ms: number): number {

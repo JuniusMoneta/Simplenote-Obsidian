@@ -10,6 +10,7 @@ export interface SimplenoteSyncSettings {
 	dryRun: boolean;
 	debugLogging: boolean;
 	translateLinks: boolean;
+	hideProperties: boolean;
 	appId: string;
 	apiKey: string;
 }
@@ -26,6 +27,7 @@ export const DEFAULT_SETTINGS: SimplenoteSyncSettings = {
 	dryRun: false,
 	debugLogging: false,
 	translateLinks: false,
+	hideProperties: true,
 	appId: DEFAULT_APP_ID,
 	apiKey: DEFAULT_API_KEY,
 };
@@ -202,6 +204,17 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 				t.setValue(s.debugLogging).onChange(async (v) => {
 					s.debugLogging = v;
 					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Hide plugin properties')
+			.setDesc('Hide simplenote-id and simplenote-title in the properties view. The tags and pinned properties stay visible.')
+			.addToggle((t) =>
+				t.setValue(s.hideProperties).onChange(async (v) => {
+					s.hideProperties = v;
+					await this.plugin.saveSettings();
+					this.plugin.applyPropertyVisibility();
 				}),
 			);
 

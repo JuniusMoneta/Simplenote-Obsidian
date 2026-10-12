@@ -24,3 +24,9 @@
 	justify-content: flex-end;
 	margin-top: var(--size-4-4);
 }
+
+/* Hide plugin-managed identity properties in the properties view (setting "Hide plugin properties"). */
+body.simplenote-sync-hide-props .metadata-property[data-property-key="simplenote-id"],
+body.simplenote-sync-hide-props .metadata-property[data-property-key="simplenote-title"] {
+	display: none;
+}
