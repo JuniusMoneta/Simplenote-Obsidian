@@ -2,7 +2,7 @@ import { Notice, Platform, Plugin, TAbstractFile, TFile, debounce } from 'obsidi
 import { obsidianHttp } from './http';
 import { Logger } from './log';
 import { ObsidianVault } from './obsidian-vault';
-import { DEFAULT_SETTINGS, errorMessage, MIN_SYNC_INTERVAL, SimplenoteSettingTab, SimplenoteSyncSettings } from './settings';
+import { ACTIVE_WINDOW_MS, DEFAULT_SETTINGS, errorMessage, MIN_SYNC_INTERVAL, SimplenoteSettingTab, SimplenoteSyncSettings } from './settings';
 import { SimperiumClient, type HttpFn } from './simperium';
 import { normalizeState, type StateStore, type SyncState } from './state';
 import { SyncEngine, type SyncStatus } from './sync';
@@ -36,6 +36,9 @@ export default class SimplenoteSyncPlugin extends Plugin {
 	private statusTimer: number | null = null;
 	private lastStatus: SyncStatus = { kind: 'idle', at: 0, problems: 0 };
 	private readonly dirtyPaths = new Set<string>();
+	/** Last time something changed on either side; drives the active/idle polling interval. */
+	private lastActivity = 0;
+	private lastTimerSync = 0;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -116,6 +119,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 			if (!(f instanceof TFile) || f.extension !== 'md') return;
 			if (this.vaultAdapter.wasWrittenByPlugin(f.path) || (oldPath && this.vaultAdapter.wasWrittenByPlugin(oldPath))) return;
 			this.dirtyPaths.add(f.path);
+			this.lastActivity = Date.now();
 			kick();
 		};
 		this.app.workspace.onLayoutReady(() => {
@@ -127,7 +131,10 @@ export default class SimplenoteSyncPlugin extends Plugin {
 			void this.syncNow('plugin load');
 		});
 		this.registerDomEvent(document, 'visibilitychange', () => {
-			if (document.visibilityState === 'visible') void this.syncNow('app resumed');
+			if (document.visibilityState === 'visible') {
+				this.lastActivity = Date.now();
+				void this.syncNow('app resumed');
+			}
 		});
 	}
 
@@ -152,6 +159,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		const data = (await this.loadData()) as Partial<SimplenoteSyncSettings> | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {});
 		if (this.settings.syncIntervalSeconds < MIN_SYNC_INTERVAL) this.settings.syncIntervalSeconds = MIN_SYNC_INTERVAL;
+		if (this.settings.idleIntervalSeconds < MIN_SYNC_INTERVAL) this.settings.idleIntervalSeconds = MIN_SYNC_INTERVAL;
 	}
 
 	async saveSettings(): Promise<void> {
@@ -242,10 +250,21 @@ export default class SimplenoteSyncPlugin extends Plugin {
 
 	// ----- sync -----
 
+	/**
+	 * Adaptive polling: the timer ticks at the active interval; when nothing changed on either side
+	 * for ACTIVE_WINDOW_MS, syncs only happen every idle interval.
+	 */
 	restartTimer(): void {
 		if (this.timer !== null) window.clearInterval(this.timer);
-		const ms = Math.max(MIN_SYNC_INTERVAL, this.settings.syncIntervalSeconds) * 1000;
-		this.timer = this.registerIntervalSafe(() => void this.syncNow('timer'), ms);
+		const active = Math.max(MIN_SYNC_INTERVAL, this.settings.syncIntervalSeconds) * 1000;
+		this.timer = this.registerIntervalSafe(() => {
+			const now = Date.now();
+			const idle = now - this.lastActivity > ACTIVE_WINDOW_MS;
+			const due = idle ? Math.max(active, this.settings.idleIntervalSeconds * 1000) : active;
+			if (now - this.lastTimerSync < due - 500) return;
+			this.lastTimerSync = now;
+			void this.syncNow(idle ? 'timer (idle)' : 'timer');
+		}, active);
 	}
 
 	async syncNow(reason: string, full = false): Promise<void> {
@@ -261,6 +280,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		this.dirtyPaths.clear();
 		try {
 			const r = await this.engine.sync({ full, reason });
+			if (r.pulled + r.pushed + r.trashed > 0) this.lastActivity = Date.now();
 			if (r.errors.length > 0 && (reason === 'command' || reason === 'ribbon')) new Notice(`Simplenote: ${r.errors.length} error(s). See the sync log.`);
 		} catch (e) {
 			this.log.error(`sync crashed: ${errorMessage(e)}`);

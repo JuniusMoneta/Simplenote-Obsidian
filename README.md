@@ -53,8 +53,9 @@ Dry-run mode shows the same dialog and changes nothing.
 
 ## How sync works
 
-- Every sync pulls first, then pushes. Interval: 30 s while Obsidian is open (setting), plus on file
-  changes (3 s debounce), on "Sync now", and when the app comes back to the foreground (iOS).
+- Every sync pulls first, then pushes. Polling is adaptive: every 10 s for five minutes after any change
+  on either side, then every 60 s when idle (both settings, minimum 10 s). Local edits sync 3 s after you
+  stop typing, and a sync runs on "Sync now" and when the app comes back to the foreground (iOS).
 - Simultaneous edits on both sides are merged. The server merges text changes; if it refuses, the
   plugin merges locally (line by line, never dropping text).
 - Deleting a file moves the note to the Simplenote trash. Trashing a note on Simplenote moves the

@@ -5,6 +5,7 @@ import type SimplenoteSyncPlugin from './main';
 export interface SimplenoteSyncSettings {
 	email: string;
 	syncIntervalSeconds: number;
+	idleIntervalSeconds: number;
 	excludedFolders: string[];
 	maxNoteSizeKb: number;
 	dryRun: boolean;
@@ -21,7 +22,8 @@ export const DEFAULT_API_KEY = 'c8c2b86337154cdabc989b23e30c6bf4';
 
 export const DEFAULT_SETTINGS: SimplenoteSyncSettings = {
 	email: '',
-	syncIntervalSeconds: 30,
+	syncIntervalSeconds: 10,
+	idleIntervalSeconds: 60,
 	excludedFolders: [],
 	maxNoteSizeKb: 975,
 	dryRun: false,
@@ -32,7 +34,9 @@ export const DEFAULT_SETTINGS: SimplenoteSyncSettings = {
 	apiKey: DEFAULT_API_KEY,
 };
 
-export const MIN_SYNC_INTERVAL = 30;
+export const MIN_SYNC_INTERVAL = 10;
+/** How long after the last change (either side) the fast interval stays in effect. */
+export const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
 
 export class SimplenoteSettingTab extends PluginSettingTab {
 	plugin: SimplenoteSyncPlugin;
@@ -161,13 +165,27 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName('Sync interval (seconds)')
-			.setDesc(`Minimum ${MIN_SYNC_INTERVAL}.`)
+			.setName('Sync interval while active (seconds)')
+			.setDesc(`Used for 5 minutes after any change on either side. Minimum ${MIN_SYNC_INTERVAL}. Local edits sync 3 seconds after you stop typing regardless.`)
 			.addText((t) =>
 				t.setValue(String(s.syncIntervalSeconds)).onChange(async (v) => {
 					const n = Number.parseInt(v, 10);
 					if (Number.isFinite(n) && n >= MIN_SYNC_INTERVAL) {
 						s.syncIntervalSeconds = n;
+						await this.plugin.saveSettings();
+						this.plugin.restartTimer();
+					}
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Sync interval when idle (seconds)')
+			.setDesc(`Used when nothing changed for 5 minutes. Minimum ${MIN_SYNC_INTERVAL}.`)
+			.addText((t) =>
+				t.setValue(String(s.idleIntervalSeconds)).onChange(async (v) => {
+					const n = Number.parseInt(v, 10);
+					if (Number.isFinite(n) && n >= MIN_SYNC_INTERVAL) {
+						s.idleIntervalSeconds = n;
 						await this.plugin.saveSettings();
 						this.plugin.restartTimer();
 					}

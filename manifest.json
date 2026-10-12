@@ -1,7 +1,7 @@
 {
 	"id": "simplenote-sync",
 	"name": "Simplenote Sync",
-	"version": "0.2.5",
+	"version": "0.2.6",
 	"minAppVersion": "1.11.4",
 	"description": "Keeps every Markdown note in the vault in two-way sync with a Simplenote account. Folders map to obsidian: tags.",
 	"author": "JuniusMoneta",
