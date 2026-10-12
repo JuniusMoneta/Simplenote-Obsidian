@@ -98,7 +98,12 @@ posts again against the current version.
   between (re-run itest for a finer probe: 250/300/400 KB). Default maximum note size set to 190 KB.
   A 413 on push is logged as a warning and the file is skipped until it shrinks.
 
+- **Website tag display (checked by eye, screenshot 2026-10-12):** every stored tag is shown verbatim on the
+  note, including `obsidian:with space`, `obsidian:comma,here`, `obsidian:emoji😀`, `obsidian:café`,
+  `obsidian:x&y`, `obsidian:colon:more`, and `obsidian:Case` and `obsidian:case` as two separate chips.
+  The encoding (space → `_`, `,` → `%2C`, `%` → `%25`) is kept because the website's tag input strips
+  spaces and commas, so a tag with a space could not be retyped on the web.
+
 ### Still to check by eye on the Simplenote website
 
-- Which of the test tags show, and how (`obsidian:with space`, `obsidian:comma,here`, `obsidian:emoji😀`).
 - Whether `[Title](simplenote://note/<id>)` opens the note when clicked (link translation, M7).
