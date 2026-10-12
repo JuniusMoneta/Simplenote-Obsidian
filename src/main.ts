@@ -184,6 +184,25 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		return !!this.app.secretStorage.getSecret(TOKEN_SECRET_ID);
 	}
 
+	/** Email-code login, step 1. Goes to app.simplenote.com, which Chromium can reach (unlike auth.simperium.com). */
+	async requestLoginCode(email: string): Promise<void> {
+		this.log.info(`login: requesting an email code for ${email}`);
+		await this.newClient(0).requestLoginCode(email);
+		this.log.info('login: code requested; check the mailbox');
+	}
+
+	/** Email-code login, step 2. */
+	async completeLoginCode(email: string, code: string): Promise<void> {
+		this.log.info('login: exchanging the email code for a token');
+		const probe = this.newClient(0);
+		const token = await probe.completeLoginCode(email, code);
+		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, token);
+		this.client.setToken(token);
+		this.log.info(`logged in as ${email} (email code)`);
+		if (this.engine.status.kind === 'error') this.engine.resume();
+		void this.syncNow('login');
+	}
+
 	async login(email: string, password: string): Promise<void> {
 		const nodeHttps = nodeHttpsOrNull();
 		this.log.info(`login: requesting a token for ${email} from ${this.settings.appId} via ${nodeHttps ? 'Node https (desktop)' : 'requestUrl'}`);

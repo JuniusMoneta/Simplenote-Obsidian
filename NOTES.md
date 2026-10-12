@@ -113,6 +113,12 @@ posts again against the current version.
   works from Chromium. This is the one deliberate exception to the "no Node APIs" rule; it is feature-detected
   and never runs on mobile.
 
+- **Email-code login (the web app's default since Simplenote 2.22):** `POST https://app.simplenote.com/account/request-login`
+  with `{"username": email, "request_source": "electron"}` emails a code; `POST https://app.simplenote.com/account/complete-login`
+  with `{"username": email, "auth_code": CODE}` answers `{"sync_token": ...}`, which is a Simperium access token.
+  No API key involved. `app.simplenote.com` is reachable from Chromium, so this is the plugin's primary login
+  (source: simplenote-electron `lib/boot-without-auth.tsx`, `requestLogin` / `completeLogin`).
+
 ### Still to check by eye on the Simplenote website
 
 - Whether `[Title](simplenote://note/<id>)` opens the note when clicked (link translation, M7).

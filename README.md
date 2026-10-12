@@ -31,8 +31,10 @@ Do the same on each device (Mac, Windows, iPhone). The release assets are `main.
 
 ## Setup
 
-1. Settings → Simplenote Sync → enter the email and password → **Log in**. The password is used once to
-   get a token. The token is kept in Obsidian's secret storage, never in `data.json`.
+1. Settings → Simplenote Sync → enter the email → **Send code** → enter the code from the email →
+   **Log in with code**. This is the same flow the Simplenote website uses. The resulting token is kept
+   in Obsidian's secret storage, never in `data.json`. Password login and a paste-a-token field exist
+   as alternatives (see "Login problems").
 2. Leave "Sync with Simplenote on this device" on (it is device-local).
 3. Optional: excluded folders, maximum note size (default 200 KB), dry-run mode.
 4. Click the ribbon icon or run **Simplenote: Sync now**.
@@ -93,9 +95,9 @@ without an id stay as text. **Turn it on or off on every device at the same time
 
 ## Login problems
 
-"Log in" talks to `auth.simperium.com` once to get a token. That host renegotiates TLS during the request,
-which Chromium refuses (`ERR_CONNECTION_CLOSED`), so on desktop the plugin sends this one request through
-Node's HTTPS stack, which accepts it. Everything else goes through Obsidian's `requestUrl`.
+The email-code login talks to `app.simplenote.com`, which works from Obsidian on all platforms.
+Password login talks to `auth.simperium.com`, which has been seen to drop or reject connections from some
+networks and to demand a TLS renegotiation that Chromium (and so Obsidian) refuses; use the email code instead.
 
 If login still fails (the sync log shows `ERR_CONNECTION_TIMED_OUT` or `ERR_CONNECTION_CLOSED`), get the
 token from a terminal and paste it into "Paste a token instead" in the plugin settings. After that the

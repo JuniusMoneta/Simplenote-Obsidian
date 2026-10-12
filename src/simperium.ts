@@ -84,6 +84,8 @@ export interface ClientOptions {
 	log?: (msg: string) => void;
 	authHost?: string;
 	apiHost?: string;
+	/** Host of the Simplenote account service (email-code login). */
+	accountHost?: string;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -114,6 +116,7 @@ export class SimperiumClient {
 	private readonly log: (msg: string) => void;
 	private readonly authHost: string;
 	private readonly apiHost: string;
+	private readonly accountHost: string;
 	private nextSlot = 0;
 	/** Count of HTTP requests sent (for tests and logging). */
 	requestCount = 0;
@@ -131,6 +134,49 @@ export class SimperiumClient {
 		this.log = opts.log ?? (() => undefined);
 		this.authHost = opts.authHost ?? 'https://auth.simperium.com';
 		this.apiHost = opts.apiHost ?? 'https://api.simperium.com';
+		this.accountHost = opts.accountHost ?? 'https://app.simplenote.com';
+	}
+
+	/**
+	 * Email-code login, step 1 (the flow the Simplenote web app uses): asks the account service
+	 * to email a login code. No API key needed; talks to app.simplenote.com only.
+	 */
+	async requestLoginCode(email: string): Promise<void> {
+		const username = email.trim().toLowerCase();
+		const res = await this.send(
+			{
+				url: `${this.accountHost}/account/request-login`,
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ username, request_source: 'electron' }),
+			},
+			[200, 201, 202, 204],
+		).catch((e: unknown) => {
+			if (e instanceof SimperiumError) throw new AuthError(`Could not request a login code (HTTP ${e.status}). Check the email address.`);
+			throw e;
+		});
+		void res;
+	}
+
+	/** Email-code login, step 2: exchanges the emailed code for a Simperium token and stores it on the client. */
+	async completeLoginCode(email: string, code: string): Promise<string> {
+		const username = email.trim().toLowerCase();
+		const res = await this.send(
+			{
+				url: `${this.accountHost}/account/complete-login`,
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ username, auth_code: code.trim().toUpperCase() }),
+			},
+			[200],
+		).catch((e: unknown) => {
+			if (e instanceof SimperiumError) throw new AuthError(`Login code rejected (HTTP ${e.status}). Request a new code and try again.`);
+			throw e;
+		});
+		const parsed = JSON.parse(res.text) as { sync_token?: string };
+		if (!parsed.sync_token) throw new AuthError('Login failed: no token in the response.');
+		this.token = parsed.sync_token;
+		return this.token;
 	}
 
 	setToken(token: string | undefined): void {

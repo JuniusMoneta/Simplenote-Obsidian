@@ -195,3 +195,24 @@ describe('hash helpers', () => {
 		expect(await noteHash('c', ['a'], true)).not.toBe(await noteHash('c', ['a'], false));
 	});
 });
+
+describe('email-code login', () => {
+	it('requests a code and exchanges it for a token', async () => {
+		const { server, username, password } = fakeWithUser();
+		void password;
+		server.loginCodes.set(username, 'ABC123');
+		const c = makeClient(server);
+		await c.requestLoginCode(username.toUpperCase());
+		expect(server.requests.some((r) => r.url === 'https://app.simplenote.com/account/request-login')).toBe(true);
+		const token = await c.completeLoginCode(username, ' abc123 ');
+		expect(token).toMatch(/^tok-/);
+		expect(c.hasToken()).toBe(true);
+		await expect(c.fetchIndex()).resolves.toBeTruthy();
+	});
+	it('rejects a wrong code with AuthError', async () => {
+		const { server, username } = fakeWithUser();
+		server.loginCodes.set(username, 'ABC123');
+		const c = makeClient(server);
+		await expect(c.completeLoginCode(username, 'nope')).rejects.toBeInstanceOf(AuthError);
+	});
+});

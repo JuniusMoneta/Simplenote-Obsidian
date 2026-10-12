@@ -29,6 +29,8 @@ export class FakeSimperium {
 	readonly users = new Map<string, string>();
 	readonly tokens = new Map<string, string>();
 	readonly requests: HttpRequest[] = [];
+	/** Pending email login codes: username -> code. */
+	readonly loginCodes = new Map<string, string>();
 	cv = 0;
 	failNext: { status: number; count: number } | null = null;
 	readonly opts: Required<FakeOptions>;
@@ -98,6 +100,7 @@ export class FakeSimperium {
 		}
 		const u = new URL(req.url);
 		if (u.hostname === 'auth.simperium.com') return this.handleAuth(req, u);
+		if (u.hostname === 'app.simplenote.com') return this.handleAccount(req, u);
 		if (u.hostname !== 'api.simperium.com') return { status: 404, headers: {}, text: 'unknown host' };
 		const parts = u.pathname.split('/').filter((p) => p.length > 0); // ['1', app, bucket, ...]
 		if (parts[0] !== '1' || parts[1] !== this.opts.appId || parts[2] !== 'note') {
@@ -131,6 +134,25 @@ export class FakeSimperium {
 		const token = `tok-${body.username}-${this.tokens.size + 1}`;
 		this.tokens.set(token, body.username);
 		return { status: 200, headers: { 'content-type': 'application/json' }, text: JSON.stringify({ access_token: token, username: body.username, userid: 'u1' }) };
+	}
+
+	private handleAccount(req: HttpRequest, u: URL): HttpResponse {
+		if (req.method !== 'POST') return { status: 405, headers: {}, text: '' };
+		let body: { username?: string; auth_code?: string; request_source?: string };
+		try {
+			body = JSON.parse(req.body ?? '') as typeof body;
+		} catch {
+			return { status: 400, headers: {}, text: 'bad json' };
+		}
+		if (!body.username || !this.users.has(body.username)) return { status: 400, headers: {}, text: 'unknown user' };
+		if (u.pathname === '/account/request-login') return { status: 200, headers: {}, text: '' };
+		if (u.pathname === '/account/complete-login') {
+			if (this.loginCodes.get(body.username) !== (body.auth_code ?? '')) return { status: 400, headers: {}, text: 'bad code' };
+			const token = `tok-${body.username}-${this.tokens.size + 1}`;
+			this.tokens.set(token, body.username);
+			return { status: 200, headers: { 'content-type': 'application/json' }, text: JSON.stringify({ sync_token: token, username: body.username }) };
+		}
+		return { status: 404, headers: {}, text: '' };
 	}
 
 	private handleIndex(u: URL): HttpResponse {

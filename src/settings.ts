@@ -60,45 +60,10 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		new Setting(containerEl)
-			.setName('Password')
-			.setDesc('Used once to get a token. The password is not stored; the token is kept in secret storage.')
-			.addText((t) => {
-				t.inputEl.type = 'password';
-				t.inputEl.autocomplete = 'current-password';
-				t.setPlaceholder('Simplenote password').onChange((v) => {
-					this.password = v;
-				});
-			});
-
 		const status = this.plugin.hasToken() ? `Logged in${s.email ? ` as ${s.email}` : ''}` : 'Not logged in';
 		new Setting(containerEl)
 			.setName('Login status')
 			.setDesc(status)
-			.addButton((b) =>
-				b
-					.setButtonText('Log in')
-					.setTooltip('Get a token with the email and password above')
-					.setCta()
-					.onClick(async () => {
-						if (!s.email || !this.password) {
-							new Notice('Enter email and password first.');
-							return;
-						}
-						b.setDisabled(true);
-						new Notice('Simplenote: logging in…', 4000);
-						try {
-							await this.plugin.login(s.email, this.password);
-							this.password = '';
-							new Notice('Simplenote: logged in.');
-						} catch (e) {
-							new Notice(`Simplenote login failed: ${errorMessage(e)}`);
-						} finally {
-							b.setDisabled(false);
-							this.display();
-						}
-					}),
-			)
 			.addButton((b) =>
 				b.setButtonText('Log out').onClick(async () => {
 					await this.plugin.logout();
@@ -106,12 +71,91 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 				}),
 			);
 
+		let loginCode = '';
+		new Setting(containerEl)
+			.setName('Log in with an email code')
+			.setDesc('Step 1: send a code to the email above. Step 2: enter the code from the email and click "Log in with code". Same flow as the Simplenote website; works on every device.')
+			.addButton((b) =>
+				b.setButtonText('Send code').onClick(async () => {
+					if (!s.email) {
+						new Notice('Enter the email first.');
+						return;
+					}
+					b.setDisabled(true);
+					try {
+						await this.plugin.requestLoginCode(s.email);
+						new Notice(`Simplenote: a login code was sent to ${s.email}. Enter it below.`, 8000);
+					} catch (e) {
+						new Notice(`Simplenote: could not send a code: ${errorMessage(e)}`);
+					} finally {
+						b.setDisabled(false);
+					}
+				}),
+			)
+			.addText((t) =>
+				t.setPlaceholder('code from the email').onChange((v) => {
+					loginCode = v;
+				}),
+			)
+			.addButton((b) =>
+				b
+					.setButtonText('Log in with code')
+					.setCta()
+					.onClick(async () => {
+						if (!s.email || !loginCode.trim()) {
+							new Notice('Enter the email and the code first.');
+							return;
+						}
+						b.setDisabled(true);
+						try {
+							await this.plugin.completeLoginCode(s.email, loginCode);
+							new Notice('Simplenote: logged in.');
+						} catch (e) {
+							new Notice(`Simplenote: ${errorMessage(e)}`);
+						} finally {
+							b.setDisabled(false);
+							this.display();
+						}
+					}),
+			);
+
+		new Setting(containerEl).setName('Other ways to log in').setHeading();
+
+		new Setting(containerEl)
+			.setName('Password')
+			.setDesc('Password login talks to auth.simperium.com, which some networks and Obsidian on desktop cannot reach. Use the email code if this fails.')
+			.addText((t) => {
+				t.inputEl.type = 'password';
+				t.inputEl.autocomplete = 'current-password';
+				t.setPlaceholder('Simplenote password').onChange((v) => {
+					this.password = v;
+				});
+			})
+			.addButton((b) =>
+				b.setButtonText('Log in with password').onClick(async () => {
+					if (!s.email || !this.password) {
+						new Notice('Enter email and password first.');
+						return;
+					}
+					b.setDisabled(true);
+					new Notice('Simplenote: logging in…', 4000);
+					try {
+						await this.plugin.login(s.email, this.password);
+						this.password = '';
+						new Notice('Simplenote: logged in.');
+					} catch (e) {
+						new Notice(`Simplenote login failed: ${errorMessage(e)}`);
+					} finally {
+						b.setDisabled(false);
+						this.display();
+					}
+				}),
+			);
+
 		let pastedToken = '';
 		new Setting(containerEl)
-			.setName('Paste a token instead')
-			.setDesc(
-				'If "Log in" cannot reach auth.simperium.com from Obsidian, get a token in a terminal (see README, "Login problems") and paste it here. It is kept in secret storage.',
-			)
+			.setName('Paste a token')
+			.setDesc('A Simperium access token obtained elsewhere (see README, "Login problems"). Kept in secret storage.')
 			.addText((t) => {
 				t.inputEl.type = 'password';
 				t.setPlaceholder('access token').onChange((v) => {
