@@ -10,6 +10,8 @@ export interface NoteState {
 	systemTags: string[];
 	mtime: number;
 	size: number;
+	/** Pinned (bookmarked) state as last synced; bookmark changes do not touch the file, so the scan compares this. */
+	pinned?: boolean;
 	/** Set when the file must be re-read next sync although its stat is unchanged (link targets changed). */
 	recheck?: string;
 }
@@ -90,6 +92,7 @@ export function normalizeState(raw: unknown): SyncState {
 					mtime: typeof n.mtime === 'number' ? n.mtime : 0,
 					size: typeof n.size === 'number' ? n.size : -1,
 					...(typeof n.recheck === 'string' ? { recheck: n.recheck } : {}),
+					...(typeof n.pinned === 'boolean' ? { pinned: n.pinned } : {}),
 				};
 			}
 		}

@@ -217,8 +217,9 @@ describe('create, delete, move, tags, pinned (M4)', () => {
 		expect(h.server.get('a')?.tags).toEqual(['todo']);
 	});
 
-	it('tags and pinned round trip both ways', async () => {
+	it('tags and pinned round trip both ways (pinned as property when bookmarks are off)', async () => {
 		const h = await synced();
+		h.vault.bookmarksAvailable = false;
 		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags: [todo, urgent]\npinned: true\n---\nline one\nline two');
 		await h.engine.sync();
 		expect(h.server.get('a')?.tags).toEqual(['todo', 'urgent', 'obsidian:F']);
@@ -467,5 +468,51 @@ describe('vanished files and remote trash (iCloud eviction)', () => {
 		expect(h.vault.has('Other.md')).toBe(true);
 		expect(h.server.get('b')?.deleted).toBe(false);
 		expect(h.server.get('b')?.content).toBe('Other\nbody edited locally');
+	});
+});
+
+describe('pinned <-> Obsidian bookmarks', () => {
+	it('a pinned note is bookmarked on pull and unpinned when the bookmark is removed', async () => {
+		const h = await makeHarness();
+		seed(h, 'p', 'Pinned\nbody', [], ['markdown', 'pinned']);
+		seed(h, 'q', 'Plain\nbody');
+		await h.engine.sync();
+		expect(h.vault.bookmarked.has('pinned.md')).toBe(true);
+		expect(h.vault.get('Pinned.md')).not.toContain('pinned: true');
+		// remove the bookmark in Obsidian -> unpinned on Simplenote, no file change needed
+		h.vault.bookmarks.setBookmarked('Pinned.md', false);
+		let r = await h.engine.sync();
+		expect(r.pushed).toBe(1);
+		expect(h.server.get('p')?.systemTags).toEqual(['markdown']);
+		// bookmark a plain note -> pinned on Simplenote
+		h.vault.bookmarks.setBookmarked('Plain.md', true);
+		r = await h.engine.sync();
+		expect(r.pushed).toBe(1);
+		expect(h.server.get('q')?.systemTags).toEqual(['markdown', 'pinned']);
+		// pin on the web -> bookmark appears; unpin -> bookmark goes
+		h.server.seed('p', { content: 'Pinned\nbody', systemTags: ['markdown', 'pinned'] });
+		await h.engine.sync();
+		expect(h.vault.bookmarked.has('pinned.md')).toBe(true);
+		h.server.seed('p', { content: 'Pinned\nbody', systemTags: ['markdown'] });
+		await h.engine.sync();
+		expect(h.vault.bookmarked.has('pinned.md')).toBe(false);
+		// stable afterwards
+		r = await h.engine.sync();
+		expect(r.pushed + r.pulled).toBe(0);
+	});
+
+	it('a new bookmarked file is created pinned, and bookmarks follow renames', async () => {
+		const h = await synced();
+		h.vault.put('Fresh.md', 'hello');
+		h.vault.bookmarks.setBookmarked('Fresh.md', true);
+		await h.engine.sync();
+		h.advance(NEW_FILE_WAIT_MS + 1);
+		await h.engine.sync();
+		const id = Object.keys(h.store.load().notes).find((k) => k !== 'a' && k !== 'b') ?? '';
+		expect(h.server.get(id)?.systemTags).toEqual(['markdown', 'pinned']);
+		await h.vault.rename('Fresh.md', 'Moved/Fresh.md');
+		await h.engine.sync();
+		expect(h.vault.bookmarked.has('moved/fresh.md')).toBe(true);
+		expect(h.server.get(id)?.systemTags).toEqual(['markdown', 'pinned']);
 	});
 });

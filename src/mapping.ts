@@ -243,10 +243,17 @@ export interface RenderedFile {
  */
 export type TagStyle = 'inline' | 'property';
 
-export function noteToFileText(note: Pick<NoteData, 'content' | 'tags' | 'systemTags'>, id: string, basename: string, tagStyle: TagStyle = 'inline'): RenderedFile {
+export function noteToFileText(
+	note: Pick<NoteData, 'content' | 'tags' | 'systemTags'>,
+	id: string,
+	basename: string,
+	tagStyle: TagStyle = 'inline',
+	/** false when pinned is represented by an Obsidian bookmark instead of the property. */
+	pinnedAsProperty = true,
+): RenderedFile {
 	const { title, body: rawBody } = splitContent(note.content);
 	const { otherTags } = splitTags(note.tags);
-	const pinned = note.systemTags.includes('pinned');
+	const pinned = pinnedAsProperty && note.systemTags.includes('pinned');
 	const needsTitleKey = nfc(title) !== nfc(basename);
 	const inlineTags = tagStyle === 'inline' ? otherTags.filter(canBeInlineTag) : [];
 	const propertyTags = otherTags.filter((t) => !inlineTags.includes(t));

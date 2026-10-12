@@ -21,6 +21,17 @@ export class MemoryVault implements VaultAdapter {
 	readonly events: VaultEvent[] = [];
 	/** Paths that throw on read (simulates cloud placeholders). */
 	readonly unreadable = new Set<string>();
+	/** Bookmarked paths (core Bookmarks stand-in). Set `bookmarksAvailable` to false to simulate the plugin being off. */
+	readonly bookmarked = new Set<string>();
+	bookmarksAvailable = true;
+	readonly bookmarks = {
+		available: () => this.bookmarksAvailable,
+		isBookmarked: (path: string) => this.bookmarked.has(key(path)),
+		setBookmarked: (path: string, on: boolean) => {
+			if (on) this.bookmarked.add(key(path));
+			else this.bookmarked.delete(key(path));
+		},
+	};
 	clock = 1_000_000;
 
 	constructor(private readonly now: () => number = () => Date.now()) {}
@@ -124,6 +135,7 @@ export class MemoryVault implements VaultAdapter {
 		this.files.delete(key(oldPath));
 		f.path = newPath;
 		this.files.set(key(newPath), f);
+		if (this.bookmarked.delete(key(oldPath))) this.bookmarked.add(key(newPath));
 		this.ensureFolders(newPath);
 		this.events.push({ kind: 'rename', path: newPath, oldPath });
 		return Promise.resolve();

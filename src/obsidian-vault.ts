@@ -1,14 +1,78 @@
 import { App, normalizePath, TFile, TFolder } from 'obsidian';
-import type { FileInfo, VaultAdapter, WriteTimes } from './vault';
+import type { BookmarkAdapter, FileInfo, VaultAdapter, WriteTimes } from './vault';
+
+interface BookmarkItem {
+	type: string;
+	path?: string;
+	items?: BookmarkItem[];
+	ctime?: number;
+	title?: string;
+}
+
+interface BookmarksInstance {
+	items?: BookmarkItem[];
+	getBookmarks?(): BookmarkItem[];
+	addItem?(item: BookmarkItem): void;
+	removeItem?(item: BookmarkItem): void;
+	saveData?(): void;
+}
+
+/** Core Bookmarks plugin via Obsidian's internal plugin registry (not in the public typings, but stable since 1.2). */
+export class ObsidianBookmarks implements BookmarkAdapter {
+	constructor(private readonly app: App) {}
+
+	private instance(): BookmarksInstance | null {
+		const internal = (this.app as unknown as { internalPlugins?: { getPluginById?(id: string): { enabled?: boolean; instance?: BookmarksInstance } | null } }).internalPlugins;
+		const p = internal?.getPluginById?.('bookmarks');
+		if (!p || p.enabled === false || !p.instance) return null;
+		return p.instance;
+	}
+
+	available(): boolean {
+		return this.instance() !== null;
+	}
+
+	private find(items: BookmarkItem[] | undefined, path: string): BookmarkItem | null {
+		for (const it of items ?? []) {
+			if (it.type === 'file' && it.path === path) return it;
+			if (it.type === 'group') {
+				const hit = this.find(it.items, path);
+				if (hit) return hit;
+			}
+		}
+		return null;
+	}
+
+	isBookmarked(path: string): boolean {
+		const inst = this.instance();
+		if (!inst) return false;
+		const items = inst.getBookmarks ? inst.getBookmarks() : inst.items;
+		return this.find(items, path) !== null;
+	}
+
+	setBookmarked(path: string, on: boolean): void {
+		const inst = this.instance();
+		if (!inst) return;
+		const items = inst.getBookmarks ? inst.getBookmarks() : inst.items;
+		const existing = this.find(items, path);
+		if (on && !existing) inst.addItem?.({ type: 'file', path, ctime: Date.now() });
+		else if (!on && existing) inst.removeItem?.(existing);
+		else return;
+		inst.saveData?.();
+	}
+}
 
 /** VaultAdapter over the Obsidian Vault API. Records its own writes so file events can be ignored. */
 export class ObsidianVault implements VaultAdapter {
 	private readonly recentWrites = new Map<string, number>();
+	readonly bookmarks: BookmarkAdapter;
 
 	constructor(
 		private readonly app: App,
 		private readonly pluginDir: string,
-	) {}
+	) {
+		this.bookmarks = new ObsidianBookmarks(app);
+	}
 
 	/** True when the plugin wrote, renamed, or trashed this path within the last few seconds. */
 	wasWrittenByPlugin(path: string, withinMs = 5000): boolean {

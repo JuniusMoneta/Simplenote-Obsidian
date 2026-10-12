@@ -16,7 +16,16 @@ export interface WriteTimes {
 	mtime?: number;
 }
 
+/** Obsidian's core Bookmarks list, used as the counterpart of Simplenote's pin. */
+export interface BookmarkAdapter {
+	available(): boolean;
+	isBookmarked(path: string): boolean;
+	setBookmarked(path: string, on: boolean): void;
+}
+
 export interface VaultAdapter {
+	/** Optional bookmark integration; when absent or unavailable, the `pinned` property is used. */
+	bookmarks?: BookmarkAdapter;
 	listMarkdownFiles(): FileInfo[];
 	listFolders(): string[];
 	/** Case-insensitive existence check of a file or folder path. */

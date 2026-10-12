@@ -21,7 +21,7 @@ describe('pull-only mirror', () => {
 		expect(h.vault.get('Projects/Client Work/Plan.md')).toBe('---\nsimplenote-id: a\ntags:\n  - todo\n---\nbody of plan');
 		expect(h.vault.get('Projects/Client Work/Plan (2).md')).toBe('---\nsimplenote-id: d\nsimplenote-title: Plan\n---\nanother plan');
 		expect(h.vault.get('Ideas/Heading with colon.md')).toContain('simplenote-title: "# Heading: with colon"');
-		expect(h.vault.get('Pinned.md')).toContain('pinned: true');
+		expect(h.vault.bookmarked.has('pinned.md')).toBe(true); // pinned = Obsidian bookmark
 		expect(h.firstRunProposals).toHaveLength(1);
 		expect(h.firstRunProposals[0]?.unmatchedRemote).toHaveLength(5);
 		const state = h.store.load();

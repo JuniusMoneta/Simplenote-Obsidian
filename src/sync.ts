@@ -29,7 +29,7 @@ import {
 import { matchFirstRun, removeTitleLine, type FirstRunDecision, type FirstRunProposal, type LocalCandidate, type RemoteCandidate } from './firstrun';
 import { AuthError, SimperiumClient, SimperiumError, type IndexEntry, type NoteData } from './simperium';
 import type { NoteState, StateStore, SyncProblem, SyncState } from './state';
-import type { FileInfo, VaultAdapter } from './vault';
+import type { BookmarkAdapter, FileInfo, VaultAdapter } from './vault';
 
 export const NEW_FILE_WAIT_MS = 2 * 60 * 1000;
 export const SUSPICIOUS_WAIT_MS = 60 * 1000;
@@ -441,7 +441,8 @@ export class SyncEngine {
 				continue;
 			}
 			const st = byPath.get(nameKey(info.path));
-			if (st && st.mtime === info.mtime && st.size === info.size && !st.recheck) {
+			const pinnedChanged = st !== undefined && st.pinned !== undefined && this.bookmarksAvailable() && (this.vault.bookmarks as BookmarkAdapter).isBookmarked(info.path) !== st.pinned;
+			if (st && st.mtime === info.mtime && st.size === info.size && !st.recheck && !pinnedChanged) {
 				lf.id = st.id;
 				lf.changed = false;
 			} else {
@@ -512,6 +513,17 @@ export class SyncEngine {
 
 	// ---------------- hashing helpers ----------------
 
+	/** Pinned state of a local file: the Obsidian bookmark when the core plugin is available, else the property. */
+	private pinnedOf(path: string, note: LocalNote): boolean {
+		const bm = this.vault.bookmarks;
+		if (bm && bm.available()) return bm.isBookmarked(path);
+		return note.pinned;
+	}
+
+	private bookmarksAvailable(): boolean {
+		return !!this.vault.bookmarks && this.vault.bookmarks.available();
+	}
+
 	private localTags(lf: LocalFile, note: LocalNote): string[] {
 		const folderTag = encodeFolderTag(folderOfPath(lf.info.path));
 		return folderTag ? [...note.tags, folderTag] : [...note.tags];
@@ -531,7 +543,7 @@ export class SyncEngine {
 	}
 
 	private async hashLocal(lf: LocalFile, note: LocalNote): Promise<string> {
-		return noteHash(this.remoteContentFor(lf, note), this.localTags(lf, note).map(nameKey), note.pinned);
+		return noteHash(this.remoteContentFor(lf, note), this.localTags(lf, note).map(nameKey), this.pinnedOf(lf.info.path, note));
 	}
 
 	private async hashRemote(data: NoteData): Promise<string> {
@@ -594,10 +606,11 @@ export class SyncEngine {
 			const remoteOther = splitTags(m.remote.data.tags).otherTags;
 			const localNote = fileToNote(fix ? removeTitleLine(m.local.text) : m.local.text, basenameOfPath(m.local.path));
 			const tags = unionTags(localNote.tags, remoteOther);
-			const pinned = m.remote.data.systemTags.includes('pinned') || localNote.pinned;
+			const pinned = m.remote.data.systemTags.includes('pinned') || this.pinnedOf(m.local.path, localNote);
 			const values: Record<string, unknown> = { 'simplenote-id': m.remote.id };
 			if (tags.length > 0) values.tags = tags;
-			if (pinned) values.pinned = true;
+			if (pinned && !this.bookmarksAvailable()) values.pinned = true;
+			if (pinned && this.bookmarksAvailable()) (this.vault.bookmarks as BookmarkAdapter).setBookmarked(m.local.path, true);
 			info = await this.assignId(m.local.path, fix ? removeTitleLine(m.local.text) : m.local.text, localNote, values);
 			this.state.notes[m.remote.id] = {
 				id: m.remote.id,
@@ -813,6 +826,8 @@ export class SyncEngine {
 	}
 
 	private async writeState(id: string, path: string, text: string, version: number, data: NoteData, info: FileInfo | null): Promise<void> {
+		const pinned = data.systemTags.includes('pinned');
+		if (this.bookmarksAvailable()) (this.vault.bookmarks as BookmarkAdapter).setBookmarked(path, pinned);
 		this.state.notes[id] = {
 			id,
 			path,
@@ -822,6 +837,7 @@ export class SyncEngine {
 			systemTags: data.systemTags,
 			mtime: info?.mtime ?? 0,
 			size: info?.size ?? -1,
+			pinned,
 		};
 		delete this.state.pendingDeletes[id];
 		delete this.state.pendingEmpty[id];
@@ -841,7 +857,7 @@ export class SyncEngine {
 			describe: `create ${path} from Simplenote`,
 			run: async () => {
 				const content = this.localContentFor(data);
-				const text = noteToFileText({ ...data, content }, id, basenameOfPath(path), this.settingsFn().tagStyle ?? 'inline').text;
+				const text = noteToFileText({ ...data, content }, id, basenameOfPath(path), this.settingsFn().tagStyle ?? 'inline', !this.bookmarksAvailable()).text;
 				if (this.dryRun) {
 					this.log.info(`[dry-run] create ${path}`);
 					return;
@@ -882,7 +898,7 @@ export class SyncEngine {
 		const folder = this.targetFolder(data, ctx, path);
 		const newPath = this.pickPath(folder, title, ctx, path);
 		const content = this.localContentFor(data);
-		const text = noteToFileText({ ...data, content }, id, basenameOfPath(newPath), this.settingsFn().tagStyle ?? 'inline').text;
+		const text = noteToFileText({ ...data, content }, id, basenameOfPath(newPath), this.settingsFn().tagStyle ?? 'inline', !this.bookmarksAvailable()).text;
 		if (this.dryRun) {
 			this.log.info(`[dry-run] update ${path}${newPath !== path ? ` and rename to ${newPath}` : ''}`);
 			return;
@@ -923,7 +939,7 @@ export class SyncEngine {
 			describe: `already in sync: ${lf.info.path}`,
 			run: () => {
 				if (this.dryRun) return Promise.resolve();
-				this.state.notes[id] = { id, path: lf.info.path, version, contentHash: hash, tags: data.tags, systemTags: data.systemTags, mtime: lf.info.mtime, size: lf.info.size };
+				this.state.notes[id] = { id, path: lf.info.path, version, contentHash: hash, tags: data.tags, systemTags: data.systemTags, mtime: lf.info.mtime, size: lf.info.size, pinned: data.systemTags.includes('pinned') };
 				delete this.state.pendingDeletes[id];
 				delete this.state.pendingEmpty[id];
 				delete this.state.pendingNew[lf.info.path];
@@ -1012,7 +1028,7 @@ export class SyncEngine {
 	private async pushLocal(lf: LocalFile, note: LocalNote, id: string, baseVersion: number, remote: NoteData | undefined, st: NoteState | undefined): Promise<void> {
 		const content = this.remoteContentFor(lf, note);
 		let tags = this.localTags(lf, note);
-		let pinned = note.pinned;
+		let pinned = this.pinnedOf(lf.info.path, note);
 		let systemTags = st?.systemTags ?? remote?.systemTags ?? ['markdown'];
 		if (st && remote) {
 			tags = mergeTags(st.tags, tags, remote.tags);
@@ -1043,6 +1059,7 @@ export class SyncEngine {
 					systemTags: current.data.systemTags,
 					mtime: lf.info.mtime,
 					size: lf.info.size,
+					pinned: current.data.systemTags.includes('pinned'),
 				};
 				delete this.state.pendingDeletes[id];
 				delete this.state.pendingEmpty[id];
@@ -1087,6 +1104,7 @@ export class SyncEngine {
 			systemTags: res.data.systemTags,
 			mtime: lf.info.mtime,
 			size: lf.info.size,
+			pinned: res.data.systemTags.includes('pinned'),
 		};
 		delete this.state.pendingDeletes[id];
 		delete this.state.pendingEmpty[id];
@@ -1140,8 +1158,9 @@ export class SyncEngine {
 	private async createRemote(lf: LocalFile, note: LocalNote, id: string): Promise<void> {
 		const content = this.remoteContentFor(lf, note);
 		const tags = this.localTags(lf, note);
-		const systemTags = setPinned(['markdown'], note.pinned);
-		const hash = await noteHash(content, tags.map(nameKey), note.pinned);
+		const pinned = this.pinnedOf(lf.info.path, note);
+		const systemTags = setPinned(['markdown'], pinned);
+		const hash = await noteHash(content, tags.map(nameKey), pinned);
 		const nowSec = this.now() / 1000;
 		const res = await this.client.postNote(
 			id,
@@ -1159,6 +1178,7 @@ export class SyncEngine {
 			systemTags: res.data.systemTags,
 			mtime: lf.info.mtime,
 			size: lf.info.size,
+			pinned,
 		};
 	}
 
@@ -1202,7 +1222,7 @@ export class SyncEngine {
 				}
 				const localHash = await this.hashLocal(lf, note);
 				if (localHash === (await this.hashRemote(got.data))) {
-					this.state.notes[id] = { id, path: lf.info.path, version: got.version, contentHash: localHash, tags: got.data.tags, systemTags: got.data.systemTags, mtime: lf.info.mtime, size: lf.info.size };
+					this.state.notes[id] = { id, path: lf.info.path, version: got.version, contentHash: localHash, tags: got.data.tags, systemTags: got.data.systemTags, mtime: lf.info.mtime, size: lf.info.size, pinned: got.data.systemTags.includes('pinned') };
 					return;
 				}
 				if (lf.info.mtime > got.data.modificationDate * 1000 || got.data.deleted) await this.pushLocal(lf, note, id, got.version, got.data, undefined);
