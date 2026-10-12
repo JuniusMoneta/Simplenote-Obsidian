@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, SecretComponent, Setting } from 'obsidian';
+import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type SimplenoteSyncPlugin from './main';
 
 /** Settings stored in data.json (shared between devices through the vault). */
@@ -58,13 +58,16 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		const pw = new Setting(containerEl)
+		new Setting(containerEl)
 			.setName('Password')
-			.setDesc('Used once to get a token. The password is not stored.');
-		const secret = new SecretComponent(this.app, pw.controlEl);
-		secret.onChange((v) => {
-			this.password = v ?? '';
-		});
+			.setDesc('Used once to get a token. The password is not stored; the token is kept in secret storage.')
+			.addText((t) => {
+				t.inputEl.type = 'password';
+				t.inputEl.autocomplete = 'current-password';
+				t.setPlaceholder('Simplenote password').onChange((v) => {
+					this.password = v;
+				});
+			});
 
 		const status = this.plugin.hasToken() ? `Logged in${s.email ? ` as ${s.email}` : ''}` : 'Not logged in';
 		new Setting(containerEl)
@@ -73,6 +76,7 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 			.addButton((b) =>
 				b
 					.setButtonText('Log in')
+					.setTooltip('Get a token with the email and password above')
 					.setCta()
 					.onClick(async () => {
 						if (!s.email || !this.password) {
