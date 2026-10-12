@@ -23,6 +23,7 @@ export function nameKey(s: string): string {
 export function titleToFileName(title: string): string {
 	let s = nfc(title).replace(/\r$/, '');
 	s = s.replace(/[\\/:*?"<>|#^[\]]/g, '');
+	// eslint-disable-next-line no-control-regex -- control characters are not allowed in file names
 	s = s.replace(/[\u0000-\u001f\u007f]/g, '');
 	s = s.replace(/^[.\s]+/, '');
 	s = s.replace(/[.\s]+$/, '');
@@ -176,14 +177,21 @@ export function fileToNote(text: string, basename: string): LocalNote {
 		tags = tagsFromValue(d.tags).filter((t) => !isFolderTag(t));
 		pinned = d.pinned === true;
 		const st = d['simplenote-title'];
-		storedTitle = typeof st === 'string' ? st : st === null || st === undefined ? null : String(st);
+		storedTitle = typeof st === 'string' ? st : typeof st === 'number' || typeof st === 'boolean' ? String(st) : null;
 		const yaml = removeKeys(fm.yaml, MANAGED_KEYS);
 		body = joinFrontmatter(yaml, fm.body, fm.eol);
 	} else {
 		body = fm.body;
+		if (fm.invalid) id = idFromRawYaml(fm.yaml);
 	}
 	const { title, usesTitleKey } = effectiveTitle(basename, storedTitle);
 	return { id, title, body, content: `${title}\n${body}`, tags, pinned, usesTitleKey, invalidFrontmatter: fm.invalid };
+}
+
+/** Fallback for invalid YAML: find a simplenote-id line by regex so the note keeps its identity. */
+export function idFromRawYaml(yaml: string): string | null {
+	const m = /^["']?simplenote-id["']?\s*:\s*["']?([^\s"']+)["']?\s*$/m.exec(yaml);
+	return m?.[1] ?? null;
 }
 
 // ---------- note -> file ----------

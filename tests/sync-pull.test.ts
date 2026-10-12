@@ -192,7 +192,7 @@ describe('first run linking', () => {
 		expect(h.server.get('b')?.content).toBe('With title\nbody b');
 		// the local-only file is uploaded right away (approved in the first run)
 		const local = h.vault.get('Only local.md') ?? '';
-		expect(local).toMatch(/simplenote-id: [0-9a-f]{32}/);
+		expect(local).toMatch(/simplenote-id: "?[0-9a-f]{32}"?/);
 		expect([...h.server.notes.values()].some((n) => n.data?.content === 'Only local\nlocal only')).toBe(true);
 	});
 
@@ -204,7 +204,7 @@ describe('first run linking', () => {
 		h.answers.firstRun = () => ({ confirmedProbable: new Set(), applyTitleFixes: true, importUnmatched: true, uploadUnmatched: true });
 		await h.engine.sync();
 		expect(h.vault.has('Probable (2).md')).toBe(true);
-		expect(h.vault.get('Probable.md')).toMatch(/simplenote-id: [0-9a-f]{32}/);
+		expect(h.vault.get('Probable.md')).toMatch(/simplenote-id: "?[0-9a-f]{32}"?/);
 		expect(h.vault.get('Probable.md')).not.toContain('simplenote-id: c\n');
 	});
 

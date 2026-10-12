@@ -2,6 +2,7 @@
  * Sync engine: pull, first-run linking, push, deletions, guards.
  * Runs against VaultAdapter + SimperiumClient so it can be tested without Obsidian.
  */
+import { joinFrontmatter, setKeys } from './frontmatter';
 import { computeCcid, newNoteId, noteHash } from './hash';
 import { Logger } from './log';
 import { mergeStrings } from './merge';
@@ -66,6 +67,8 @@ export interface LinkTranslator {
 	toRemote(body: string, path: string): string;
 	/** Body text from Simplenote -> body text for the local file. */
 	toLocal(body: string): string;
+	/** Paths of notes that link to the given path (used to re-push them once the target has an id). */
+	backlinks(path: string): string[];
 }
 
 export interface EngineDeps {
@@ -112,6 +115,8 @@ interface Action {
 	describe: string;
 	moveFrom?: string;
 	moveTo?: string;
+	/** Actions sharing a group count as one change in the mass-change guard. */
+	group?: string;
 	run: () => Promise<void>;
 }
 
@@ -128,6 +133,8 @@ export class SyncEngine {
 	private queued: Promise<SyncResult> | null = null;
 	private state!: SyncState;
 	private dryRun = false;
+	/** Paths of files the current plan will create, so link translation can resolve them during the batch. */
+	private planned = new Map<string, string>();
 	paused = false;
 	pauseReason = '';
 	status: SyncStatus = { kind: 'idle', at: 0 };
@@ -147,6 +154,19 @@ export class SyncEngine {
 		this.deps.onStatus?.(s);
 	}
 
+	lastSyncAt(): number {
+		return (this.state ?? this.store.load()).lastSync;
+	}
+
+	/** id -> path of all notes known on this device. */
+	knownNotes(): Map<string, string> {
+		const st = this.state ?? this.store.load();
+		const m = new Map<string, string>();
+		for (const n of Object.values(st.notes)) m.set(n.id, n.path);
+		for (const [id, path] of this.planned) if (!m.has(id)) m.set(id, path);
+		return m;
+	}
+
 	pause(reason = 'paused by user'): void {
 		this.paused = true;
 		this.pauseReason = reason;
@@ -161,7 +181,7 @@ export class SyncEngine {
 	/** Runs a sync. Calls are serialized; a call made while a sync runs is coalesced into one follow-up run. */
 	sync(opts: { full?: boolean; reason?: string } = {}): Promise<SyncResult> {
 		if (this.running && this.queued) return this.queued;
-		const p = this.chain.then(() => this.run(opts)) as Promise<SyncResult>;
+		const p: Promise<SyncResult> = this.chain.then(() => this.run(opts));
 		this.chain = p.catch(() => undefined);
 		if (this.running) {
 			this.queued = p;
@@ -294,7 +314,7 @@ export class SyncEngine {
 			}
 			if (paused.has(nameKey(info.path))) continue;
 			const st = byPath.get(nameKey(info.path));
-			if (st && st.mtime === info.mtime && st.size === info.size) {
+			if (st && st.mtime === info.mtime && st.size === info.size && !st.recheck) {
 				lf.id = st.id;
 				lf.changed = false;
 			} else {
@@ -445,11 +465,10 @@ export class SyncEngine {
 			const localNote = fileToNote(fix ? removeTitleLine(m.local.text) : m.local.text, basenameOfPath(m.local.path));
 			const tags = unionTags(localNote.tags, remoteOther);
 			const pinned = m.remote.data.systemTags.includes('pinned') || localNote.pinned;
-			info = await this.vault.processFrontmatter(m.local.path, (fm) => {
-				fm['simplenote-id'] = m.remote.id;
-				if (tags.length > 0) fm.tags = tags;
-				if (pinned) fm.pinned = true;
-			});
+			const values: Record<string, unknown> = { 'simplenote-id': m.remote.id };
+			if (tags.length > 0) values.tags = tags;
+			if (pinned) values.pinned = true;
+			info = await this.assignId(m.local.path, fix ? removeTitleLine(m.local.text) : m.local.text, localNote, values);
 			this.state.notes[m.remote.id] = {
 				id: m.remote.id,
 				path: m.local.path,
@@ -475,6 +494,7 @@ export class SyncEngine {
 
 	private async plan(entries: IndexEntry[], scan: Scan, full: boolean, now: number): Promise<Action[]> {
 		const actions: Action[] = [];
+		this.planned = new Map();
 		const handled = new Set<string>();
 		const remoteIds = new Set<string>();
 		const taken = new Set(scan.pathKeys);
@@ -559,6 +579,7 @@ export class SyncEngine {
 						st.path = lf.info.path;
 						st.mtime = lf.info.mtime;
 						st.size = lf.info.size;
+						delete st.recheck;
 						continue;
 					}
 					if (note.body.trim().length === 0 && st.size > lf.info.size) {
@@ -571,7 +592,9 @@ export class SyncEngine {
 						if (now - first < SUSPICIOUS_WAIT_MS) continue;
 					}
 					delete this.state.pendingEmpty[lf.id];
-					actions.push(this.pushAction(lf, note, lf.id, st.version, undefined, st));
+					const a = this.pushAction(lf, note, lf.id, st.version, undefined, st);
+					if (st.recheck) a.group = st.recheck;
+					actions.push(a);
 					handled.add(lf.id);
 				} else if (!remoteIds.has(lf.id)) {
 					if (!(await this.loadLocal(lf))) continue;
@@ -660,15 +683,16 @@ export class SyncEngine {
 	private createLocalAction(id: string, data: NoteData, version: number, ctx: { taken: Set<string>; folders: string[] }): Action {
 		const title = splitContent(data.content).title;
 		const folder = this.targetFolder(data, ctx);
+		const path = this.pickPath(folder, title, ctx);
+		ctx.taken.add(nameKey(path));
+		this.planned.set(id, path);
 		return {
 			kind: 'create-local',
 			category: 'change',
-			path: joinPath(folder, titleToFileName(title)),
+			path,
 			id,
-			describe: `create ${joinPath(folder, titleToFileName(title))} from Simplenote`,
+			describe: `create ${path} from Simplenote`,
 			run: async () => {
-				const path = this.pickPath(folder, title, ctx);
-				ctx.taken.add(nameKey(path));
 				const content = this.localContentFor(data);
 				const text = noteToFileText({ ...data, content }, id, basenameOfPath(path)).text;
 				if (this.dryRun) {
@@ -907,15 +931,22 @@ export class SyncEngine {
 					return;
 				}
 				const id = newNoteId();
-				const info = await this.vault.processFrontmatter(lf.info.path, (fm) => {
-					fm['simplenote-id'] = id;
-				});
-				lf.info = info;
+				lf.info = await this.assignId(lf.info.path, text, note, { 'simplenote-id': id });
 				await this.createRemote(lf, fileToNote(await this.vault.read(lf.info.path), basenameOfPath(lf.info.path)), id);
 				delete this.state.pendingNew[lf.info.path];
 				void ctx;
 			},
 		};
+	}
+
+	/** Writes plugin keys into a file. Files with invalid YAML get a new block in front (the old block stays as text). */
+	private async assignId(path: string, text: string, note: LocalNote, values: Record<string, unknown>): Promise<FileInfo> {
+		if (note.invalidFrontmatter) {
+			return this.vault.write(path, joinFrontmatter(setKeys('', values), text));
+		}
+		return this.vault.processFrontmatter(path, (fm) => {
+			for (const [k, v] of Object.entries(values)) fm[k] = v;
+		});
 	}
 
 	private async createRemote(lf: LocalFile, note: LocalNote, id: string): Promise<void> {
@@ -930,6 +961,7 @@ export class SyncEngine {
 			{ ccid: await computeCcid(id, 0, hash) },
 		);
 		this.log.info(`created note on Simplenote for ${lf.info.path} (v${res.version})`);
+		this.markBacklinks(lf.info.path);
 		this.state.notes[id] = {
 			id,
 			path: lf.info.path,
@@ -940,6 +972,24 @@ export class SyncEngine {
 			mtime: lf.info.mtime,
 			size: lf.info.size,
 		};
+	}
+
+	/** With link translation on, notes linking to a newly identified note change on the Simplenote side. */
+	private markBacklinks(path: string): void {
+		const t = this.deps.translator;
+		if (!t || !this.settingsFn().translateLinks) return;
+		const byPath = new Map<string, NoteState>();
+		for (const n of Object.values(this.state.notes)) byPath.set(nameKey(n.path), n);
+		const reason = `Links to "${basenameOfPath(path)}" updated (note got its id)`;
+		let n = 0;
+		for (const p of t.backlinks(path)) {
+			const st = byPath.get(nameKey(p));
+			if (st) {
+				st.recheck = reason;
+				n++;
+			}
+		}
+		if (n > 0) this.log.info(`${n} note(s) link to ${path}; they will be re-pushed with translated links`);
 	}
 
 	private linkOrCreateAction(lf: LocalFile, note: LocalNote, id: string, ctx: { taken: Set<string>; folders: string[] }): Action {
@@ -1002,9 +1052,16 @@ export function summarize(actions: Action[]): PlanSummary {
 	let localTrash = 0;
 	let remoteTrash = 0;
 	let creates = 0;
+	const groups = new Map<string, number>();
 	for (const a of actions) {
 		if (a.category === 'none') continue;
 		s.items.push(a.describe);
+		if (a.group) {
+			const seen = groups.get(a.group) ?? 0;
+			groups.set(a.group, seen + 1);
+			if (seen === 0) s.change++;
+			continue;
+		}
 		if (a.category === 'trash') s.trash++;
 		else if (a.category === 'move') {
 			s.move++;
@@ -1022,6 +1079,7 @@ export function summarize(actions: Action[]): PlanSummary {
 	if (creates) s.causes.push(`${creates} new file(s) to upload`);
 	if (localTrash) s.causes.push(`${localTrash} file(s) to trash locally (trashed or deleted on Simplenote)`);
 	if (remoteTrash) s.causes.push(`${remoteTrash} file(s) deleted in the vault: their notes will be trashed on Simplenote`);
+	for (const [g, n] of groups) s.causes.push(`${g}: ${n} note(s), counted as one change`);
 	for (const [k, n] of moves) {
 		const [from, to] = k.split('\u0000');
 		s.causes.push(`Folder "${from || '/'}" -> "${to || '/'}": ${n} note(s) will be moved or retagged`);

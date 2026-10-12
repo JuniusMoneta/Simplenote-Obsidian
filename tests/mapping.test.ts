@@ -157,8 +157,9 @@ describe('fileToNote / noteToFileText round trip', () => {
 		const text = '---\nsimplenote-id: id\nbroken: : [\n---\nbody';
 		const back = fileToNote(text, 'T');
 		expect(back.invalidFrontmatter).toBe(true);
-		expect(back.id).toBeNull();
+		expect(back.id).toBe('id'); // identity kept by regex fallback
 		expect(back.content).toBe(`T\n${text}`);
+		expect(fileToNote('---\nbroken: [\n---\nbody', 'T').id).toBeNull();
 	});
 
 	it('does not normalize body whitespace or line endings', () => {

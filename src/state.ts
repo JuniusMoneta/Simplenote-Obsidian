@@ -10,6 +10,8 @@ export interface NoteState {
 	systemTags: string[];
 	mtime: number;
 	size: number;
+	/** Set when the file must be re-read next sync although its stat is unchanged (link targets changed). */
+	recheck?: string;
 }
 
 export interface PendingDelete {
@@ -66,6 +68,7 @@ export function normalizeState(raw: unknown): SyncState {
 					systemTags: Array.isArray(n.systemTags) ? n.systemTags : ['markdown'],
 					mtime: typeof n.mtime === 'number' ? n.mtime : 0,
 					size: typeof n.size === 'number' ? n.size : -1,
+					...(typeof n.recheck === 'string' ? { recheck: n.recheck } : {}),
 				};
 			}
 		}
