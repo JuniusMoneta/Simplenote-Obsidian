@@ -163,7 +163,7 @@ async function main(): Promise<void> {
 		created.push(sizeId);
 		await client.postNote(sizeId, { ...base, content: 'itest size\n' });
 		let largest = 0;
-		for (const kb of [100, 200, 250, 300, 400, 500, 1000]) {
+		for (const kb of [500, 900, 950, 975, 990, 1000]) {
 			const content = `itest size\n${'x'.repeat(kb * 1024 - 11)}`;
 			const r = await rawRequest(client, token1, 'POST', `/i/${sizeId}?response=0`, JSON.stringify({ content }));
 			const ok = r.status === 200 || r.status === 412;

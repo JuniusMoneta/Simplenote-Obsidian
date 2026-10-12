@@ -23,7 +23,7 @@ export const DEFAULT_SETTINGS: SimplenoteSyncSettings = {
 	email: '',
 	syncIntervalSeconds: 30,
 	excludedFolders: [],
-	maxNoteSizeKb: 1000,
+	maxNoteSizeKb: 975,
 	dryRun: false,
 	debugLogging: false,
 	translateLinks: false,
@@ -189,7 +189,7 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Maximum note size (KB)')
-			.setDesc('Larger files are not uploaded. Simplenote itself refuses notes around 1 MB; refused notes are reported as sync problems.')
+			.setDesc('Larger files are not uploaded. Simplenote refuses notes over about 1,000,000 bytes; the default 975 KB stays just under that.')
 			.addText((t) =>
 				t.setValue(String(s.maxNoteSizeKb)).onChange(async (v) => {
 					const n = Number.parseInt(v, 10);
