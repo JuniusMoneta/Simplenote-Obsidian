@@ -1,5 +1,5 @@
 import { App, normalizePath, TFile, TFolder } from 'obsidian';
-import type { FileInfo, VaultAdapter } from './vault';
+import type { FileInfo, VaultAdapter, WriteTimes } from './vault';
 
 /** VaultAdapter over the Obsidian Vault API. Records its own writes so file events can be ignored. */
 export class ObsidianVault implements VaultAdapter {
@@ -73,18 +73,19 @@ export class ObsidianVault implements VaultAdapter {
 		return Promise.resolve({ ...(cache.frontmatter ?? {}) });
 	}
 
-	async write(path: string, text: string): Promise<FileInfo> {
+	async write(path: string, text: string, times?: WriteTimes): Promise<FileInfo> {
 		const f = this.file(path);
 		this.mark(path);
-		await this.app.vault.modify(f, text);
+		await this.app.vault.modify(f, text, times?.mtime ? { mtime: times.mtime } : undefined);
 		return ObsidianVault.info(f);
 	}
 
-	async create(path: string, text: string): Promise<FileInfo> {
+	async create(path: string, text: string, times?: WriteTimes): Promise<FileInfo> {
 		const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
 		if (folder) await this.createFolder(folder);
 		this.mark(path);
-		const f = await this.app.vault.create(path, text);
+		const opts = times && (times.ctime || times.mtime) ? { ctime: times.ctime, mtime: times.mtime } : undefined;
+		const f = await this.app.vault.create(path, text, opts);
 		return ObsidianVault.info(f);
 	}
 

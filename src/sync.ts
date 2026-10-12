@@ -848,7 +848,7 @@ export class SyncEngine {
 					await this.vault.createFolder(folder);
 					ctx.folders.push(folder);
 				}
-				const info = await this.vault.create(path, text);
+				const info = await this.vault.create(path, text, noteTimes(data));
 				this.log.info(`created ${path}`);
 				await this.writeState(id, path, text, version, data, info);
 			},
@@ -885,7 +885,7 @@ export class SyncEngine {
 			this.log.info(`[dry-run] update ${path}${newPath !== path ? ` and rename to ${newPath}` : ''}`);
 			return;
 		}
-		let info = await this.vault.write(path, text);
+		let info = await this.vault.write(path, text, { mtime: noteTimes(data).mtime });
 		if (newPath !== path) {
 			if (folder && !this.vault.exists(folder)) {
 				await this.vault.createFolder(folder);
@@ -1271,6 +1271,12 @@ export function summarize(actions: Action[]): PlanSummary {
 		s.causes.push(`Folder "${from || '/'}" -> "${to || '/'}": ${n} note(s) will be moved or retagged`);
 	}
 	return s;
+}
+
+/** Simplenote dates (Unix seconds) as file times (ms); undefined when the note has none. */
+export function noteTimes(data: NoteData): { ctime?: number; mtime?: number } {
+	const ms = (s: number): number | undefined => (Number.isFinite(s) && s > 0 ? Math.round(s * 1000) : undefined);
+	return { ctime: ms(data.creationDate), mtime: ms(data.modificationDate) };
 }
 
 export function remedyFor(p: SyncProblem): string {

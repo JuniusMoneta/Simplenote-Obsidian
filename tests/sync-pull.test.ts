@@ -243,3 +243,19 @@ describe('first run linking', () => {
 		expect(logText(h)).toContain('[dry-run] first run: link Note.md -> a');
 	});
 });
+
+describe('file dates follow Simplenote', () => {
+	it('created files carry the note creation and modification dates; remote edits set the modified time', async () => {
+		const h = await makeHarness();
+		h.server.seed('a', { content: 'Dated\nbody', creationDate: 1_600_000_000, modificationDate: 1_650_000_000 });
+		await h.engine.sync();
+		expect(h.vault.ctimeOf('Dated.md')).toBe(1_600_000_000_000);
+		expect(h.vault.mtimeOf('Dated.md')).toBe(1_650_000_000_000);
+		h.server.seed('a', { content: 'Dated\nbody 2', creationDate: 1_600_000_000, modificationDate: 1_700_000_000 });
+		await h.engine.sync();
+		expect(h.vault.mtimeOf('Dated.md')).toBe(1_700_000_000_000);
+		expect(h.store.load().notes.a?.mtime).toBe(1_700_000_000_000);
+		const r = await h.engine.sync();
+		expect(r.pushed + r.pulled).toBe(0);
+	});
+});

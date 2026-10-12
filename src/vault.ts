@@ -9,6 +9,13 @@ export interface FileInfo {
 	size: number;
 }
 
+export interface WriteTimes {
+	/** Creation time in ms (only honored on create). */
+	ctime?: number;
+	/** Modification time in ms. */
+	mtime?: number;
+}
+
 export interface VaultAdapter {
 	listMarkdownFiles(): FileInfo[];
 	listFolders(): string[];
@@ -18,10 +25,10 @@ export interface VaultAdapter {
 	read(path: string): Promise<string>;
 	/** Frontmatter as parsed by Obsidian's metadata cache, {} when none, null when unknown. */
 	readFrontmatter(path: string): Promise<Record<string, unknown> | null>;
-	/** Overwrites an existing file. */
-	write(path: string, text: string): Promise<FileInfo>;
-	/** Creates a new file, creating parent folders as needed. */
-	create(path: string, text: string): Promise<FileInfo>;
+	/** Overwrites an existing file, optionally stamping its modification time. */
+	write(path: string, text: string, times?: WriteTimes): Promise<FileInfo>;
+	/** Creates a new file, creating parent folders as needed, optionally stamping its times. */
+	create(path: string, text: string, times?: WriteTimes): Promise<FileInfo>;
 	createFolder(path: string): Promise<void>;
 	/** Rename or move; parent folders are created as needed. Uses fileManager.renameFile in Obsidian. */
 	rename(oldPath: string, newPath: string): Promise<void>;

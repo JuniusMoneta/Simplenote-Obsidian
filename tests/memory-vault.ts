@@ -1,6 +1,6 @@
 import { parseYaml } from 'obsidian';
 import { joinFrontmatter, setKeys, splitFrontmatter } from '../src/frontmatter';
-import type { FileInfo, VaultAdapter } from '../src/vault';
+import type { FileInfo, VaultAdapter, WriteTimes } from '../src/vault';
 
 function key(p: string): string {
 	return p.normalize('NFC').toLocaleLowerCase('en-US');
@@ -14,7 +14,7 @@ export interface VaultEvent {
 
 /** In-memory vault with case-insensitive paths, mtimes, folders, and an event log. */
 export class MemoryVault implements VaultAdapter {
-	private files = new Map<string, { path: string; text: string; mtime: number; createdByPlugin: boolean }>();
+	private files = new Map<string, { path: string; text: string; mtime: number; ctime: number; createdByPlugin: boolean }>();
 	private folders = new Set<string>();
 	readonly trashed: { path: string; text: string }[] = [];
 	readonly pluginFiles = new Map<string, string>();
@@ -35,9 +35,16 @@ export class MemoryVault implements VaultAdapter {
 	put(path: string, text: string, mtime?: number): void {
 		const k = key(path);
 		const existed = this.files.has(k);
-		this.files.set(k, { path, text, mtime: mtime ?? this.tick(), createdByPlugin: false });
+		const t = mtime ?? this.tick();
+		this.files.set(k, { path, text, mtime: t, ctime: this.files.get(k)?.ctime ?? t, createdByPlugin: false });
 		this.ensureFolders(path);
 		this.events.push({ kind: existed ? 'modify' : 'create', path });
+	}
+	ctimeOf(path: string): number | undefined {
+		return this.files.get(key(path))?.ctime;
+	}
+	mtimeOf(path: string): number | undefined {
+		return this.files.get(key(path))?.mtime;
 	}
 	remove(path: string): void {
 		this.files.delete(key(path));
@@ -89,18 +96,19 @@ export class MemoryVault implements VaultAdapter {
 		const fm = splitFrontmatter(f.text);
 		return fm.hasBlock && !fm.invalid ? fm.data : {};
 	}
-	write(path: string, text: string): Promise<FileInfo> {
+	write(path: string, text: string, times?: WriteTimes): Promise<FileInfo> {
 		const f = this.files.get(key(path));
 		if (!f) return Promise.reject(new Error(`ENOENT ${path}`));
 		f.text = text;
-		f.mtime = this.tick();
+		f.mtime = times?.mtime ?? this.tick();
 		f.createdByPlugin = true;
 		this.events.push({ kind: 'modify', path: f.path });
 		return Promise.resolve(this.stat(path) as FileInfo);
 	}
-	create(path: string, text: string): Promise<FileInfo> {
+	create(path: string, text: string, times?: WriteTimes): Promise<FileInfo> {
 		if (this.files.has(key(path))) return Promise.reject(new Error(`EEXIST ${path}`));
-		this.files.set(key(path), { path, text, mtime: this.tick(), createdByPlugin: true });
+		const t = this.tick();
+		this.files.set(key(path), { path, text, mtime: times?.mtime ?? t, ctime: times?.ctime ?? times?.mtime ?? t, createdByPlugin: true });
 		this.ensureFolders(path);
 		this.events.push({ kind: 'create', path });
 		return Promise.resolve(this.stat(path) as FileInfo);
