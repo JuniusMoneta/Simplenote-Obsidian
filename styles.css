@@ -30,3 +30,8 @@ body.simplenote-sync-hide-props .metadata-property[data-property-key="simplenote
 body.simplenote-sync-hide-props .metadata-property[data-property-key="simplenote-title"] {
 	display: none;
 }
+
+/* When a note has no properties other than the plugin's, hide the whole properties block too. */
+body.simplenote-sync-hide-props .metadata-container:not(:has(.metadata-property:not([data-property-key="simplenote-id"]):not([data-property-key="simplenote-title"]))) {
+	display: none;
+}
