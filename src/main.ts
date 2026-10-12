@@ -6,7 +6,7 @@ import { DEFAULT_SETTINGS, errorMessage, MIN_SYNC_INTERVAL, SimplenoteSettingTab
 import { SimperiumClient, type HttpFn } from './simperium';
 import { normalizeState, type StateStore, type SyncState } from './state';
 import { SyncEngine, type SyncStatus } from './sync';
-import { confirmPlan, firstRunDialog, LogModal } from './ui';
+import { confirmPlan, ExcludedModal, firstRunDialog, LogModal } from './ui';
 import { LinkTranslatorImpl } from './links';
 
 const TOKEN_SECRET_ID = 'simplenote-sync-token';
@@ -107,6 +107,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		this.addCommand({ id: 'full-reconcile', name: 'Full reconcile', callback: () => void this.syncNow('full reconcile', true) });
 		this.addCommand({ id: 'open-log', name: 'Open sync log', callback: () => new LogModal(this.app, () => this.log.getLines()).open() });
 		this.addCommand({ id: 'log-out', name: 'Log out', callback: () => void this.logout() });
+		this.addCommand({ id: 'list-excluded', name: 'List excluded files', callback: () => new ExcludedModal(this.app, () => this.engine.excludedFiles()).open() });
 
 		// file events (debounced per file, ignoring the plugin's own writes)
 		const kick = debounce(() => void this.syncNow('file changes'), FILE_EVENT_DEBOUNCE_MS, true);

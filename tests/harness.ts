@@ -20,6 +20,7 @@ export interface Harness {
 	/** Override to simulate the owner's answers. */
 	answers: { confirmPlan: boolean; firstRun: ((p: FirstRunProposal) => FirstRunDecision | null) | null };
 	notices: string[];
+	excluded: string[];
 	advance(ms: number): void;
 	newDevice(): Promise<Harness>;
 }
@@ -46,6 +47,7 @@ export async function makeHarness(opts: { fake?: FakeOptions; settings?: Partial
 		firstRunProposals: [] as FirstRunProposal[],
 		answers: { confirmPlan: true, firstRun: null as Harness['answers']['firstRun'] },
 		notices: [] as string[],
+		excluded: [] as string[],
 	};
 	const deps: EngineDeps = {
 		vault,
@@ -58,8 +60,9 @@ export async function makeHarness(opts: { fake?: FakeOptions; settings?: Partial
 			h.confirmations.push(s);
 			return Promise.resolve(h.answers.confirmPlan);
 		},
-		firstRun: (p) => {
+		firstRun: (p, excluded) => {
 			h.firstRunProposals.push(p);
+			h.excluded.push(...excluded.map((e) => e.path));
 			if (h.answers.firstRun) return Promise.resolve(h.answers.firstRun(p));
 			return Promise.resolve({ confirmedProbable: new Set(p.matches.filter((m) => m.method === 'probable').map((m) => m.remote.id)), applyTitleFixes: true, importUnmatched: true, uploadUnmatched: true });
 		},

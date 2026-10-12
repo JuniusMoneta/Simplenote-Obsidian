@@ -30,6 +30,8 @@ export interface SyncState {
 	pendingEmpty: Record<string, number>;
 	/** Conflict copies with a duplicate simplenote-id; never uploaded automatically. */
 	pausedPaths: string[];
+	/** Excluded files already reported in the log (path -> reason). */
+	knownExcluded: Record<string, string>;
 	backupDone: boolean;
 	firstRunDone: boolean;
 	lastFullReconcile: number;
@@ -44,6 +46,7 @@ export function emptyState(): SyncState {
 		pendingDeletes: {},
 		pendingEmpty: {},
 		pausedPaths: [],
+		knownExcluded: {},
 		backupDone: false,
 		firstRunDone: false,
 		lastFullReconcile: 0,
@@ -77,6 +80,7 @@ export function normalizeState(raw: unknown): SyncState {
 	if (r.pendingDeletes && typeof r.pendingDeletes === 'object') s.pendingDeletes = { ...r.pendingDeletes };
 	if (r.pendingEmpty && typeof r.pendingEmpty === 'object') s.pendingEmpty = { ...r.pendingEmpty };
 	if (Array.isArray(r.pausedPaths)) s.pausedPaths = r.pausedPaths.filter((p): p is string => typeof p === 'string');
+	if (r.knownExcluded && typeof r.knownExcluded === 'object') s.knownExcluded = { ...r.knownExcluded };
 	s.backupDone = r.backupDone === true;
 	s.firstRunDone = r.firstRunDone === true;
 	if (typeof r.lastFullReconcile === 'number') s.lastFullReconcile = r.lastFullReconcile;

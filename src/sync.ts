@@ -42,6 +42,28 @@ export interface EngineSettings {
 	translateLinks: boolean;
 }
 
+export interface ExcludedFile {
+	path: string;
+	reason: ExclusionReason;
+}
+
+export function describeExclusion(reason: ExclusionReason): string {
+	switch (reason) {
+		case 'not-markdown':
+			return 'not a Markdown file';
+		case 'dot-folder':
+			return 'in a dot folder (.obsidian, .trash, …)';
+		case 'excalidraw':
+			return 'Excalidraw drawing';
+		case 'excluded-folder':
+			return 'in an excluded folder (setting)';
+		case 'too-large':
+			return 'larger than the maximum note size (setting)';
+		case 'case-conflict':
+			return 'folder differs only by case from another folder';
+	}
+}
+
 export interface PlanSummary {
 	trash: number;
 	move: number;
@@ -79,7 +101,7 @@ export interface EngineDeps {
 	settings: () => EngineSettings;
 	now?: () => number;
 	confirmPlan: (summary: PlanSummary) => Promise<boolean>;
-	firstRun: (proposal: FirstRunProposal, excludedPaths: string[]) => Promise<FirstRunDecision | null>;
+	firstRun: (proposal: FirstRunProposal, excluded: ExcludedFile[]) => Promise<FirstRunDecision | null>;
 	notice: (msg: string) => void;
 	onStatus?: (status: SyncStatus) => void;
 	translator?: LinkTranslator;
@@ -152,6 +174,14 @@ export class SyncEngine {
 	private setStatus(s: SyncStatus): void {
 		this.status = s;
 		this.deps.onStatus?.(s);
+	}
+
+	/** Current list of excluded Markdown files with reasons (from the last scan). */
+	excludedFiles(): ExcludedFile[] {
+		const st = this.state ?? this.store.load();
+		return Object.entries(st.knownExcluded)
+			.map(([path, reason]) => ({ path, reason: reason as ExclusionReason }))
+			.sort((a, b) => (a.path < b.path ? -1 : 1));
 	}
 
 	lastSyncAt(): number {
@@ -326,9 +356,13 @@ export class SyncEngine {
 			const lf: LocalFile = { info, id: null, changed: true, excluded: reason };
 			if (reason) {
 				excluded.push(lf);
-				if (reason === 'too-large') this.log.warn(`skipping ${info.path}: larger than ${settings.maxNoteSizeKb} KB`);
+				if (this.state.knownExcluded[info.path] !== reason) {
+					this.state.knownExcluded[info.path] = reason;
+					this.log.warn(`excluded: ${info.path} (${describeExclusion(reason)})`);
+				}
 				continue;
 			}
+			delete this.state.knownExcluded[info.path];
 			if (paused.has(nameKey(info.path))) continue;
 			const st = byPath.get(nameKey(info.path));
 			if (st && st.mtime === info.mtime && st.size === info.size && !st.recheck) {
@@ -366,6 +400,8 @@ export class SyncEngine {
 		}
 		// drop paused entries whose file is gone
 		this.state.pausedPaths = this.state.pausedPaths.filter((p) => pathKeys.has(nameKey(p)));
+		for (const p of Object.keys(this.state.knownExcluded)) if (!pathKeys.has(nameKey(p))) delete this.state.knownExcluded[p];
+		if (excluded.length > 0) this.log.info(`${excluded.length} file(s) excluded from sync (command "List excluded files" shows them)`);
 		const noId = files.filter((f) => f.id === null);
 		return { files: files.filter((f) => f.id === null || byId.get(f.id) === f), byId, noId, excluded, pathKeys, folders: this.vault.listFolders() };
 	}
@@ -459,7 +495,7 @@ export class SyncEngine {
 		);
 		const decision = await this.deps.firstRun(
 			proposal,
-			scan.excluded.map((f) => f.info.path),
+			scan.excluded.map((f) => ({ path: f.info.path, reason: f.excluded ?? 'not-markdown' })),
 		);
 		if (!decision) return false;
 		for (const m of proposal.matches) {

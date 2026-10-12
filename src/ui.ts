@@ -1,6 +1,6 @@
 import { App, Modal, Setting } from 'obsidian';
 import type { FirstRunDecision, FirstRunProposal } from './firstrun';
-import type { PlanSummary } from './sync';
+import { describeExclusion, type ExcludedFile, type PlanSummary } from './sync';
 
 function buttons(el: HTMLElement): HTMLElement {
 	return el.createDiv({ cls: 'simplenote-sync-buttons' });
@@ -81,7 +81,7 @@ export class FirstRunModal extends Modal {
 	constructor(
 		app: App,
 		private readonly proposal: FirstRunProposal,
-		private readonly excludedPaths: string[],
+		private readonly excluded: ExcludedFile[],
 		private readonly resolve: (d: FirstRunDecision | null) => void,
 	) {
 		super(app);
@@ -102,8 +102,15 @@ export class FirstRunModal extends Modal {
 			`${probable.length} probable match(es) to confirm`,
 			`${p.unmatchedLocal.length} local file(s) without a note: will be uploaded as new notes`,
 			`${p.unmatchedRemote.length} Simplenote note(s) without a file: will be created in the vault`,
-			`${this.excludedPaths.length} file(s) excluded (dot folders, excluded folders, size, non-markdown)`,
+			`${this.excluded.length} file(s) excluded (listed below)`,
 		]);
+		if (this.excluded.length > 0) {
+			contentEl.createEl('p', { text: 'Excluded files (never synced):' });
+			list(
+				contentEl,
+				this.excluded.map((e) => `${e.path}  —  ${describeExclusion(e.reason)}`),
+			);
+		}
 		const highMiss = p.missRate > 0.1 && p.unmatchedRemote.length > 0;
 		if (highMiss) {
 			contentEl.createEl('p', {
@@ -180,8 +187,37 @@ export class FirstRunModal extends Modal {
 	}
 }
 
-export function firstRunDialog(app: App, proposal: FirstRunProposal, excludedPaths: string[]): Promise<FirstRunDecision | null> {
-	return new Promise((resolve) => new FirstRunModal(app, proposal, excludedPaths, resolve).open());
+export function firstRunDialog(app: App, proposal: FirstRunProposal, excluded: ExcludedFile[]): Promise<FirstRunDecision | null> {
+	return new Promise((resolve) => new FirstRunModal(app, proposal, excluded, resolve).open());
+}
+
+/** "List excluded files" command. */
+export class ExcludedModal extends Modal {
+	constructor(
+		app: App,
+		private readonly excluded: () => ExcludedFile[],
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.setTitle('Files excluded from Simplenote sync');
+		const items = this.excluded();
+		if (items.length === 0) {
+			this.contentEl.createEl('p', { text: 'No files are excluded.' });
+			return;
+		}
+		this.contentEl.createEl('p', { text: `${items.length} file(s). Reasons come from the exclusion rules and the plugin settings.` });
+		list(
+			this.contentEl,
+			items.map((e) => `${e.path}  —  ${describeExclusion(e.reason)}`),
+			1000,
+		);
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
 }
 
 /** "Open sync log" (spec 9.8). */

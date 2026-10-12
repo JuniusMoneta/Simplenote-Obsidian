@@ -269,7 +269,8 @@ describe('create, delete, move, tags, pinned (M4)', () => {
 		await h.engine.sync();
 		expect(h.server.get('b')?.deleted).toBe(false);
 		expect(h.server.get('b')?.content).toBe('Other\nbody');
-		expect(logText(h)).toContain('larger than 1 KB');
+		expect(logText(h)).toContain('excluded: Other.md (larger than the maximum note size');
+		expect(h.engine.excludedFiles().map((e) => e.path)).toEqual(['Other.md']);
 	});
 
 	it('excluded folders and dot folders never sync', async () => {
