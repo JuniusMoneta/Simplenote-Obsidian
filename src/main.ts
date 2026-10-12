@@ -1,33 +1,167 @@
-import { Plugin } from 'obsidian';
+import { Notice, Platform, Plugin, TAbstractFile, TFile, debounce } from 'obsidian';
 import { obsidianHttp } from './http';
-import { DEFAULT_SETTINGS, SimplenoteSettingTab, SimplenoteSyncSettings } from './settings';
+import { Logger } from './log';
+import { ObsidianVault } from './obsidian-vault';
+import { DEFAULT_SETTINGS, errorMessage, MIN_SYNC_INTERVAL, SimplenoteSettingTab, SimplenoteSyncSettings } from './settings';
 import { SimperiumClient } from './simperium';
+import { normalizeState, type StateStore, type SyncState } from './state';
+import { SyncEngine, type SyncStatus } from './sync';
+import { confirmPlan, firstRunDialog, LogModal } from './ui';
+import { LinkTranslatorImpl } from './links';
 
 const TOKEN_SECRET_ID = 'simplenote-sync-token';
 const LS_DEVICE_SYNC = 'simplenote-sync:device-sync-enabled';
+const LS_STATE = 'simplenote-sync:state';
+const LS_LOG = 'simplenote-sync:log';
+const FILE_EVENT_DEBOUNCE_MS = 3000;
+
+class LocalStorageStateStore implements StateStore {
+	constructor(private readonly plugin: Plugin) {}
+	load(): SyncState {
+		return normalizeState(this.plugin.app.loadLocalStorage(LS_STATE));
+	}
+	save(state: SyncState): void {
+		this.plugin.app.saveLocalStorage(LS_STATE, state);
+	}
+}
 
 export default class SimplenoteSyncPlugin extends Plugin {
 	settings!: SimplenoteSyncSettings;
+	log!: Logger;
+	client!: SimperiumClient;
+	engine!: SyncEngine;
+	vaultAdapter!: ObsidianVault;
+	private statusEl: HTMLElement | null = null;
+	private timer: number | null = null;
+	private statusTimer: number | null = null;
+	private lastStatus: SyncStatus = { kind: 'idle', at: 0 };
+	private readonly dirtyPaths = new Set<string>();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		const persistLog = debounce((lines: string[]) => this.app.saveLocalStorage(LS_LOG, lines.slice(-500)), 2000, true);
+		const stored = this.app.loadLocalStorage(LS_LOG) as unknown;
+		this.log = new Logger(
+			{
+				isDebug: () => this.settings.debugLogging,
+				onChange: persistLog,
+				mirror: (level, line) => {
+					if (level === 'error') console.error(`[simplenote-sync] ${line}`);
+				},
+			},
+			Array.isArray(stored) ? stored.filter((l): l is string => typeof l === 'string') : [],
+		);
+		this.client = this.newClient();
+		this.vaultAdapter = new ObsidianVault(this.app, this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`);
+		const translator = new LinkTranslatorImpl(this.app, () => this.engine.knownNotes(), (path) => this.isExcluded(path));
+		this.engine = new SyncEngine({
+			vault: this.vaultAdapter,
+			client: this.client,
+			store: new LocalStorageStateStore(this),
+			log: this.log,
+			settings: () => ({
+				excludedFolders: this.settings.excludedFolders,
+				maxNoteSizeKb: this.settings.maxNoteSizeKb,
+				dryRun: this.settings.dryRun,
+				translateLinks: this.settings.translateLinks,
+			}),
+			confirmPlan: (summary) => confirmPlan(this.app, summary),
+			firstRun: (proposal, excluded) => firstRunDialog(this.app, proposal, excluded),
+			notice: (msg) => {
+				new Notice(msg, 10_000);
+			},
+			onStatus: (s) => this.renderStatus(s),
+			translator,
+		});
+
 		this.addSettingTab(new SimplenoteSettingTab(this.app, this));
+		this.addRibbonIcon('refresh-cw', 'Simplenote: sync now', () => {
+			void this.syncNow('ribbon');
+		});
+		if (!Platform.isMobile) {
+			this.statusEl = this.addStatusBarItem();
+			this.statusEl.addClass('simplenote-sync-status');
+			this.statusEl.onClickEvent(() => {
+				void this.syncNow('status bar');
+			});
+		}
+		this.renderStatus({ kind: 'idle', at: this.engine.lastSyncAt() });
+		this.statusTimer = this.registerIntervalSafe(() => this.renderStatus(this.lastStatus), 30_000);
+
+		this.addCommand({ id: 'sync-now', name: 'Sync now', callback: () => void this.syncNow('command') });
+		this.addCommand({
+			id: 'pause-resume',
+			name: 'Pause / resume sync',
+			callback: () => {
+				if (this.engine.paused) {
+					this.engine.resume();
+					new Notice('Simplenote sync resumed.');
+					void this.syncNow('resume');
+				} else {
+					this.engine.pause('paused by user');
+					new Notice('Simplenote sync paused.');
+				}
+			},
+		});
+		this.addCommand({ id: 'full-reconcile', name: 'Full reconcile', callback: () => void this.syncNow('full reconcile', true) });
+		this.addCommand({ id: 'open-log', name: 'Open sync log', callback: () => new LogModal(this.app, () => this.log.getLines()).open() });
+		this.addCommand({ id: 'log-out', name: 'Log out', callback: () => void this.logout() });
+
+		// file events (debounced per file, ignoring the plugin's own writes)
+		const kick = debounce(() => void this.syncNow('file changes'), FILE_EVENT_DEBOUNCE_MS, true);
+		const onFile = (f: TAbstractFile, oldPath?: string): void => {
+			if (!(f instanceof TFile) || f.extension !== 'md') return;
+			if (this.vaultAdapter.wasWrittenByPlugin(f.path) || (oldPath && this.vaultAdapter.wasWrittenByPlugin(oldPath))) return;
+			this.dirtyPaths.add(f.path);
+			kick();
+		};
+		this.app.workspace.onLayoutReady(() => {
+			this.registerEvent(this.app.vault.on('modify', (f) => onFile(f)));
+			this.registerEvent(this.app.vault.on('create', (f) => onFile(f)));
+			this.registerEvent(this.app.vault.on('delete', (f) => onFile(f)));
+			this.registerEvent(this.app.vault.on('rename', (f, old) => onFile(f, old)));
+			this.restartTimer();
+			void this.syncNow('plugin load');
+		});
+		this.registerDomEvent(document, 'visibilitychange', () => {
+			if (document.visibilityState === 'visible') void this.syncNow('app resumed');
+		});
 	}
 
-	onunload(): void {}
+	onunload(): void {
+		if (this.timer !== null) window.clearInterval(this.timer);
+	}
+
+	private registerIntervalSafe(fn: () => void, ms: number): number {
+		const id = window.setInterval(fn, ms);
+		this.registerInterval(id);
+		return id;
+	}
+
+	// ----- settings -----
 
 	async loadSettings(): Promise<void> {
 		const data = (await this.loadData()) as Partial<SimplenoteSyncSettings> | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {});
+		if (this.settings.syncIntervalSeconds < MIN_SYNC_INTERVAL) this.settings.syncIntervalSeconds = MIN_SYNC_INTERVAL;
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 	}
 
-	hasToken(): boolean {
-		return !!this.app.secretStorage.getSecret(TOKEN_SECRET_ID);
+	isExcluded(path: string): boolean {
+		const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+		if (!path.endsWith('.md') || path.endsWith('.excalidraw.md')) return true;
+		if (folder.split('/').some((s) => s.startsWith('.'))) return true;
+		const fk = folder.toLocaleLowerCase('en-US');
+		return this.settings.excludedFolders.some((ex) => {
+			const ek = ex.toLocaleLowerCase('en-US');
+			return fk === ek || fk.startsWith(`${ek}/`);
+		});
 	}
+
+	// ----- account -----
 
 	newClient(): SimperiumClient {
 		return new SimperiumClient({
@@ -35,18 +169,33 @@ export default class SimplenoteSyncPlugin extends Plugin {
 			apiKey: this.settings.apiKey,
 			http: obsidianHttp,
 			token: this.app.secretStorage.getSecret(TOKEN_SECRET_ID) ?? undefined,
+			log: (m) => this.log.debug(`http: ${m}`),
 		});
 	}
 
+	hasToken(): boolean {
+		return !!this.app.secretStorage.getSecret(TOKEN_SECRET_ID);
+	}
+
 	async login(email: string, password: string): Promise<void> {
-		const client = this.newClient();
-		const token = await client.authorize(email, password);
+		const probe = this.newClient();
+		const token = await probe.authorize(email, password);
 		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, token);
+		this.client.setToken(token);
+		this.log.info(`logged in as ${email}`);
+		if (this.engine.status.kind === 'error') this.engine.resume();
+		void this.syncNow('login');
 	}
 
 	async logout(): Promise<void> {
 		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, '');
+		this.client.setToken(undefined);
+		this.log.info('logged out');
+		this.renderStatus({ kind: 'error', message: 'Not logged in' });
+		await Promise.resolve();
 	}
+
+	// ----- device-local toggle -----
 
 	deviceSyncEnabled(): boolean {
 		const v = this.app.loadLocalStorage(LS_DEVICE_SYNC) as boolean | null;
@@ -55,7 +204,66 @@ export default class SimplenoteSyncPlugin extends Plugin {
 
 	setDeviceSyncEnabled(v: boolean): void {
 		this.app.saveLocalStorage(LS_DEVICE_SYNC, v);
+		this.log.info(`sync on this device ${v ? 'enabled' : 'disabled'}`);
+		if (v) void this.syncNow('device sync enabled');
+		else this.renderStatus({ kind: 'paused', reason: 'disabled on this device' });
 	}
 
-	restartTimer(): void {}
+	// ----- sync -----
+
+	restartTimer(): void {
+		if (this.timer !== null) window.clearInterval(this.timer);
+		const ms = Math.max(MIN_SYNC_INTERVAL, this.settings.syncIntervalSeconds) * 1000;
+		this.timer = this.registerIntervalSafe(() => void this.syncNow('timer'), ms);
+	}
+
+	async syncNow(reason: string, full = false): Promise<void> {
+		if (!this.deviceSyncEnabled()) return;
+		if (!this.hasToken()) {
+			this.renderStatus({ kind: 'error', message: 'Not logged in' });
+			if (reason === 'command' || reason === 'ribbon') new Notice('Simplenote: log in first (plugin settings).');
+			return;
+		}
+		this.dirtyPaths.clear();
+		try {
+			const r = await this.engine.sync({ full, reason });
+			if (r.errors.length > 0 && (reason === 'command' || reason === 'ribbon')) new Notice(`Simplenote: ${r.errors.length} error(s). See the sync log.`);
+		} catch (e) {
+			this.log.error(`sync crashed: ${errorMessage(e)}`);
+			new Notice(`Simplenote sync error: ${errorMessage(e)}`);
+		}
+	}
+
+	private renderStatus(s: SyncStatus): void {
+		this.lastStatus = s;
+		if (!this.statusEl) return;
+		let text: string;
+		this.statusEl.removeClass('simplenote-sync-status-error');
+		switch (s.kind) {
+			case 'syncing':
+				text = 'Simplenote: syncing…';
+				break;
+			case 'paused':
+				text = 'Simplenote: paused';
+				break;
+			case 'error':
+				text = `Simplenote: error (${s.message})`;
+				this.statusEl.addClass('simplenote-sync-status-error');
+				break;
+			default:
+				text = s.at > 0 ? `Simplenote: synced ${ago(Date.now() - s.at)}` : 'Simplenote: not synced yet';
+		}
+		if (this.settings.dryRun) text += ' [dry-run]';
+		this.statusEl.setText(text);
+	}
+}
+
+function ago(ms: number): string {
+	const s = Math.max(0, Math.round(ms / 1000));
+	if (s < 60) return 'just now';
+	const m = Math.round(s / 60);
+	if (m < 60) return `${m}m ago`;
+	const h = Math.round(m / 60);
+	if (h < 48) return `${h}h ago`;
+	return `${Math.round(h / 24)}d ago`;
 }
