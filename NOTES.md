@@ -96,7 +96,7 @@ posts again against the current version.
   commas is still to be checked by eye (see below).
 - **Maximum note size:** second run: 100 to 500 KB accepted, 1000 KB rejected with HTTP 413 (a first run had
   rejected 500 KB once, so the limit is not sharp; the Electron importer's 1,000,000-byte cap is the likely
-  value). Default maximum note size stays at 200 KB, well below. A 413 on push is logged as a warning and
+  value). Default maximum note size raised to 500 KB (the largest verified size); larger notes answer 413 and are logged. A 413 on push is logged as a warning and
   the file is skipped until it shrinks.
 
 - **Website tag display (checked by eye, screenshot 2026-10-12):** every stored tag is shown verbatim on the

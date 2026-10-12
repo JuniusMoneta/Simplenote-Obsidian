@@ -36,7 +36,7 @@ Do the same on each device (Mac, Windows, iPhone). The release assets are `main.
    in Obsidian's secret storage, never in `data.json`. Password login and a paste-a-token field exist
    as alternatives (see "Login problems").
 2. Leave "Sync with Simplenote on this device" on (it is device-local).
-3. Optional: excluded folders, maximum note size (default 200 KB), dry-run mode.
+3. Optional: excluded folders, maximum note size (default 500 KB; Simplenote rejects notes around 1 MB), dry-run mode.
 4. Click the ribbon icon or run **Simplenote: Sync now**.
 
 ### First run
