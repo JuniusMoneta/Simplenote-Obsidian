@@ -160,7 +160,9 @@ export class SimperiumClient {
 			this.requestCount++;
 			let res: HttpResponse;
 			try {
+				this.log(`${req.method} ${req.url.replace(/\?.*$/, '')}`);
 				res = await this.http(req);
+				this.log(`-> HTTP ${res.status}`);
 			} catch (e) {
 				if (attempt >= this.maxRetries) throw e;
 				const wait = 1000 * 2 ** attempt;

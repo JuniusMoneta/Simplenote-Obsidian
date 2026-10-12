@@ -84,6 +84,7 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 							return;
 						}
 						b.setDisabled(true);
+						new Notice('Simplenote: logging in…', 4000);
 						try {
 							await this.plugin.login(s.email, this.password);
 							this.password = '';
