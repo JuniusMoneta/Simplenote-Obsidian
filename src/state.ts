@@ -50,6 +50,8 @@ export interface SyncState {
 	problems: Record<string, SyncProblem>;
 	/** Notes this device trashed on Simplenote because the file vanished (id -> path). If the file comes back, the note is restored. */
 	trashedByMe: Record<string, string>;
+	/** One-time migration of the pinned property into bookmarks done. */
+	pinnedMigrated: boolean;
 	backupDone: boolean;
 	firstRunDone: boolean;
 	lastFullReconcile: number;
@@ -67,6 +69,7 @@ export function emptyState(): SyncState {
 		knownExcluded: {},
 		problems: {},
 		trashedByMe: {},
+		pinnedMigrated: false,
 		backupDone: false,
 		firstRunDone: false,
 		lastFullReconcile: 0,
@@ -104,6 +107,7 @@ export function normalizeState(raw: unknown): SyncState {
 	if (r.knownExcluded && typeof r.knownExcluded === 'object') s.knownExcluded = { ...r.knownExcluded };
 	if (r.problems && typeof r.problems === 'object') s.problems = { ...r.problems };
 	if (r.trashedByMe && typeof r.trashedByMe === 'object') s.trashedByMe = { ...r.trashedByMe };
+	s.pinnedMigrated = r.pinnedMigrated === true;
 	s.backupDone = r.backupDone === true;
 	s.firstRunDone = r.firstRunDone === true;
 	if (typeof r.lastFullReconcile === 'number') s.lastFullReconcile = r.lastFullReconcile;

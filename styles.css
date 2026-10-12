@@ -27,11 +27,12 @@
 
 /* Hide plugin-managed identity properties in the properties view (setting "Hide plugin properties"). */
 body.simplenote-sync-hide-props .metadata-property[data-property-key="simplenote-id"],
-body.simplenote-sync-hide-props .metadata-property[data-property-key="simplenote-title"] {
+body.simplenote-sync-hide-props .metadata-property[data-property-key="simplenote-title"],
+body.simplenote-sync-hide-props .metadata-property[data-property-key="pinned"] {
 	display: none;
 }
 
 /* When a note has no properties other than the plugin's, hide the whole properties block too. */
-body.simplenote-sync-hide-props .metadata-container:not(:has(.metadata-property:not([data-property-key="simplenote-id"]):not([data-property-key="simplenote-title"]))) {
+body.simplenote-sync-hide-props .metadata-container:not(:has(.metadata-property:not([data-property-key="simplenote-id"]):not([data-property-key="simplenote-title"]):not([data-property-key="pinned"]))) {
 	display: none;
 }

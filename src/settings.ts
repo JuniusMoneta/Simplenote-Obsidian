@@ -254,7 +254,7 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Hide plugin properties')
-			.setDesc('Hide simplenote-id and simplenote-title in the properties view. The tags and pinned properties stay visible.')
+			.setDesc('Hide simplenote-id, simplenote-title and pinned in the properties view.')
 			.addToggle((t) =>
 				t.setValue(s.hideProperties).onChange(async (v) => {
 					s.hideProperties = v;

@@ -2,7 +2,7 @@
  * Sync engine: pull, first-run linking, push, deletions, guards.
  * Runs against VaultAdapter + SimperiumClient so it can be tested without Obsidian.
  */
-import { joinFrontmatter, setKeys } from './frontmatter';
+import { joinFrontmatter, setKeys, splitFrontmatter } from './frontmatter';
 import { computeCcid, newNoteId, noteHash } from './hash';
 import { Logger } from './log';
 import { mergeStrings } from './merge';
@@ -296,6 +296,7 @@ export class SyncEngine {
 				} else throw e;
 			}
 			this.log.debug(`index: ${fetched.entries.length} entries, full=${full}`);
+			await this.migratePinnedProperty();
 			let scan = await this.scanLocal(settings);
 			let preConfirmed = false;
 			if (!this.state.firstRunDone) {
@@ -380,6 +381,52 @@ export class SyncEngine {
 		} finally {
 			this.running = false;
 		}
+	}
+
+	/** A `pinned` property found in a file is turned into a bookmark and removed (bookmarks available only). */
+	private async dropPinnedProperty(lf: LocalFile): Promise<void> {
+		if (this.dryRun || !this.bookmarksAvailable() || lf.text === undefined) return;
+		const fm = splitFrontmatter(lf.text);
+		if (!fm.hasBlock || fm.invalid || !('pinned' in fm.data)) return;
+		if (fm.data.pinned === true) (this.vault.bookmarks as BookmarkAdapter).setBookmarked(lf.info.path, true);
+		try {
+			lf.info = await this.vault.processFrontmatter(lf.info.path, (f) => {
+				f.pinned = undefined;
+			});
+			lf.text = await this.vault.read(lf.info.path);
+			this.log.info(`${lf.info.path}: pinned property moved into a bookmark`);
+		} catch (e) {
+			this.log.warn(`could not remove the pinned property from ${lf.info.path}: ${errorText(e)}`);
+		}
+	}
+
+	/** One-time: turn a leftover `pinned` property into a bookmark and drop the property (bookmarks available only). */
+	private async migratePinnedProperty(): Promise<void> {
+		if (this.state.pinnedMigrated || this.dryRun || !this.bookmarksAvailable()) return;
+		const bm = this.vault.bookmarks as BookmarkAdapter;
+		let n = 0;
+		for (const info of this.vault.listMarkdownFiles()) {
+			const fm = await this.vault.readFrontmatter(info.path);
+			if (!fm || !('pinned' in fm)) continue;
+			if (fm.pinned === true) bm.setBookmarked(info.path, true);
+			try {
+				const written = await this.vault.processFrontmatter(info.path, (f) => {
+					f.pinned = undefined;
+				});
+				const st = Object.values(this.state.notes).find((x) => nameKey(x.path) === nameKey(info.path));
+				if (st) {
+					st.mtime = written.mtime;
+					st.size = written.size;
+					st.pinned = fm.pinned === true;
+				}
+				n++;
+			} catch (e) {
+				this.log.warn(`could not remove the pinned property from ${info.path}: ${errorText(e)}`);
+			}
+		}
+		if (n > 0) this.log.info(`moved the pinned property of ${n} file(s) into Obsidian bookmarks`);
+		this.state.pinnedMigrated = true;
+		this.store.save(this.state);
 	}
 
 	// ---------------- scanning ----------------
@@ -506,7 +553,8 @@ export class SyncEngine {
 			this.log.warn(`cannot read ${lf.info.path} (${errorText(e)}); will retry later`);
 			return false;
 		}
-		lf.note = fileToNote(lf.text, basenameOfPath(lf.info.path));
+		await this.dropPinnedProperty(lf);
+		lf.note = fileToNote(lf.text ?? '', basenameOfPath(lf.info.path));
 		if (lf.note.invalidFrontmatter) this.log.warn(`${lf.info.path}: frontmatter is not valid YAML; treating it as text`);
 		return true;
 	}

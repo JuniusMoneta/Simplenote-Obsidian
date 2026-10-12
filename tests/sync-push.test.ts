@@ -516,3 +516,19 @@ describe('pinned <-> Obsidian bookmarks', () => {
 		expect(h.server.get(id)?.systemTags).toEqual(['markdown', 'pinned']);
 	});
 });
+
+describe('pinned property migration', () => {
+	it('moves a leftover pinned property into a bookmark once, without pushing', async () => {
+		const h = await synced();
+		h.vault.put('Other.md', '---\nsimplenote-id: b\npinned: true\n---\nbody');
+		const posts = h.server.requests.filter((q) => q.method === 'POST').length;
+		await h.engine.sync();
+		expect(h.vault.get('Other.md')).toBe('---\nsimplenote-id: b\n---\nbody');
+		expect(h.vault.bookmarked.has('other.md')).toBe(true);
+		// the bookmark now differs from the server (unpinned there): pushed as a pin
+		expect(h.server.get('b')?.systemTags).toEqual(['markdown', 'pinned']);
+		expect(h.server.get('b')?.content).toBe('Other\nbody');
+		expect(h.server.requests.filter((q) => q.method === 'POST').length).toBe(posts + 1);
+		expect(h.store.load().pinnedMigrated).toBe(true);
+	});
+});
