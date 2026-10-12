@@ -42,6 +42,8 @@ export interface SyncState {
 	pendingDeletes: Record<string, PendingDelete>;
 	/** Notes whose local body became empty: id -> when first noticed. */
 	pendingEmpty: Record<string, number>;
+	/** Notes that changed on Simplenote while their file was unreadable, blocked, or excluded: id -> when first noticed. Re-fetched every sync until applied. */
+	pendingRemote: Record<string, number>;
 	/** Conflict copies with a duplicate simplenote-id; never uploaded automatically. */
 	pausedPaths: string[];
 	/** Excluded files already reported in the log (path -> reason). */
@@ -65,6 +67,7 @@ export function emptyState(): SyncState {
 		pendingNew: {},
 		pendingDeletes: {},
 		pendingEmpty: {},
+		pendingRemote: {},
 		pausedPaths: [],
 		knownExcluded: {},
 		problems: {},
@@ -103,6 +106,7 @@ export function normalizeState(raw: unknown): SyncState {
 	if (r.pendingNew && typeof r.pendingNew === 'object') s.pendingNew = { ...r.pendingNew };
 	if (r.pendingDeletes && typeof r.pendingDeletes === 'object') s.pendingDeletes = { ...r.pendingDeletes };
 	if (r.pendingEmpty && typeof r.pendingEmpty === 'object') s.pendingEmpty = { ...r.pendingEmpty };
+	if (r.pendingRemote && typeof r.pendingRemote === 'object') s.pendingRemote = { ...r.pendingRemote };
 	if (Array.isArray(r.pausedPaths)) s.pausedPaths = r.pausedPaths.filter((p): p is string => typeof p === 'string');
 	if (r.knownExcluded && typeof r.knownExcluded === 'object') s.knownExcluded = { ...r.knownExcluded };
 	if (r.problems && typeof r.problems === 'object') s.problems = { ...r.problems };

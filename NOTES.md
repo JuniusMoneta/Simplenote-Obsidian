@@ -122,3 +122,35 @@ posts again against the current version.
 ### Still to check by eye on the Simplenote website
 
 - Whether `[Title](simplenote://note/<id>)` opens the note when clicked (link translation, M7).
+
+## Duplicate copies of a note (0.4.2)
+
+Reported as "at least 5 versions of a note" on a vault shared through iCloud between Windows and iOS.
+Reproduced in the unit harness (`tests/sync-duplicates.test.ts`). Two causes, both in the plugin:
+
+1. The planner treated "no scanned file for this id" as "file gone" and created `Title (2).md` when the
+   note changed on Simplenote. The scan also drops files that exist: unreadable (iCloud placeholder),
+   blocked after three failed pushes, over the size setting, paused, or excluded. Fix: ids of such files
+   are collected (`presentIds`, now also from the state and for unreadable files) and the planner never
+   creates a file for them. Because the since-cursor index does not repeat the change, the id is kept in
+   `pendingRemote` and fetched again every sync until the file takes part in a sync; then the normal
+   update applies.
+2. Two devices both waited two minutes for the same new file and both created a note, because the id
+   written by the first device needs longer than the difference between the two deadlines to cross the
+   vault sync. Fix: before a new remote note (no state, no file) becomes a `(2)` file, the planner looks
+   for a local file without an id whose content and tags equal the note, and links it instead.
+   Residual: both devices creating within the same second or two. That leaves two notes and a `(2)` file;
+   the cleanup command resolves it. An automatic rule "my file now carries another id, my unchanged note
+   is a duplicate: trash it" was tried and rejected: with a lagging vault sync both devices can apply it
+   to each other's note, both notes end up trashed, and the unchanged local files follow them into the
+   trash.
+
+Cleanup command (`SyncEngine.cleanupDuplicates`): copies are compared by body and tags only (file names,
+hence titles, differ between copies in one folder). Same id: identical copies are trashed locally, the
+state path (else the shortest non-conflict name) is kept. `Title (n).md` under a second id with the same
+body as `Title.md`: the file is trashed locally and its note on Simplenote. Different text is never touched.
+
+Secret storage is device-wide, not per vault (Obsidian 1.11.4+). The token id now carries the vault id
+(`simplenote-sync-token-<appId>`); the old id is migrated by the first vault that loads and then cleared,
+so a second vault asks for its own login instead of silently syncing the first vault's account.
+

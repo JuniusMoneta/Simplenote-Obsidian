@@ -20,6 +20,7 @@ import {
 	noteToFileText,
 	splitContent,
 	splitTags,
+	stripCollisionSuffix,
 	titleToFileName,
 	uniqueBasename,
 	type ExclusionReason,
@@ -87,6 +88,18 @@ export interface SyncResult {
 	pushed: number;
 	trashed: number;
 	errors: string[];
+	dryRun: boolean;
+}
+
+export interface CleanupResult {
+	/** Files moved to the Obsidian trash. */
+	trashed: string[];
+	/** Files kept as the single copy of their note. */
+	kept: string[];
+	/** Copies whose text differs; left for the owner to merge. */
+	skipped: string[];
+	/** Duplicate notes moved to the Simplenote trash. */
+	notesTrashed: number;
 	dryRun: boolean;
 }
 
@@ -440,7 +453,11 @@ export class SyncEngine {
 		const idFiles = new Map<string, LocalFile[]>();
 		const paused = new Set(this.state.pausedPaths.map(nameKey));
 		const presentIds = new Set<string>();
+		// Records the id of a file that exists but will not take part in this sync, so that the plan
+		// never creates a second file for its note.
 		const noteId = async (path: string): Promise<void> => {
+			const known = byPath.get(nameKey(path));
+			if (known) presentIds.add(known.id);
 			const fm = await this.vault.readFrontmatter(path);
 			const id = fm?.['simplenote-id'];
 			if (typeof id === 'string' && id.length > 0) presentIds.add(id);
@@ -494,7 +511,10 @@ export class SyncEngine {
 				lf.changed = false;
 			} else {
 				const ok = await this.loadLocal(lf);
-				if (!ok) continue;
+				if (!ok) {
+					await noteId(info.path);
+					continue;
+				}
 				lf.id = lf.note?.id ?? null;
 			}
 			files.push(lf);
@@ -691,12 +711,26 @@ export class SyncEngine {
 		const taken = new Set(scan.pathKeys);
 		const folders = [...scan.folders];
 		const ctx = { taken, folders };
+		/** Files without an id already linked to a remote twin in this plan. */
+		const claimed = new Set<string>();
 
-		for (const entry of entries) {
+		// Notes that changed on Simplenote while their file could not sync are not in the since-cursor
+		// index any more: fetch them again until the file is available.
+		const all = [...entries];
+		const inIndex = new Set(entries.map((e) => e.id));
+		for (const id of Object.keys(this.state.pendingRemote)) {
+			if (inIndex.has(id) || !scan.byId.has(id)) continue;
+			const got = await this.client.getNote(id);
+			if (got) all.push({ id, v: got.version, d: got.data });
+			else delete this.state.pendingRemote[id];
+		}
+
+		for (const entry of all) {
 			remoteIds.add(entry.id);
 			const id = entry.id;
 			const st = this.state.notes[id];
 			const lf = scan.byId.get(id);
+			if (lf) delete this.state.pendingRemote[id];
 			let data = entry.d;
 			let version = entry.v;
 			if (!data) {
@@ -737,10 +771,30 @@ export class SyncEngine {
 			}
 			delete this.state.trashedByMe[id];
 			if (!lf) {
+				if (scan.presentIds.has(id)) {
+					// The file exists but is unreadable, blocked, paused, or excluded right now. Never create a
+					// second file for the note; the change is applied once the file takes part in a sync again.
+					if ((!st || version !== st.version) && this.state.pendingRemote[id] === undefined) {
+						this.state.pendingRemote[id] = now;
+						this.log.info(`${st?.path ?? id} changed on Simplenote but its file cannot sync right now; the change is applied when the file is available again`);
+					}
+					handled.add(id);
+					continue;
+				}
 				if (st && version === st.version) continue; // local file gone, remote unchanged: deletion flow decides
 				if (st) {
 					this.log.info(`${st.path} is missing locally but changed on Simplenote; recreating it`);
 					delete this.state.pendingDeletes[id];
+				} else {
+					// A note this device has never seen, with the same content as a local file that has no id yet:
+					// another device created the note for that very file (vault sync has not delivered the id yet).
+					const twin = await this.findUnlinkedTwin(data, scan, claimed);
+					if (twin) {
+						claimed.add(nameKey(twin.info.path));
+						actions.push(this.linkTwinAction(twin, id, data, version));
+						handled.add(id);
+						continue;
+					}
 				}
 				actions.push(this.createLocalAction(id, data, version, ctx));
 				handled.add(id);
@@ -812,6 +866,7 @@ export class SyncEngine {
 				continue;
 			}
 			// no id
+			if (claimed.has(nameKey(lf.info.path))) continue;
 			const first = this.state.pendingNew[lf.info.path];
 			if (first === undefined) {
 				this.state.pendingNew[lf.info.path] = now;
@@ -850,7 +905,178 @@ export class SyncEngine {
 			}
 			actions.push(this.trashRemoteAction(st));
 		}
+		for (const id of Object.keys(this.state.pendingRemote)) if (!this.state.notes[id] && !scan.presentIds.has(id)) delete this.state.pendingRemote[id];
 		return actions;
+	}
+
+	/** Content-and-tags hash of a local file, ignoring pinned (bookmarks are device-local). */
+	private async twinHashLocal(lf: LocalFile, note: LocalNote): Promise<string> {
+		return noteHash(this.remoteContentFor(lf, note), this.localTags(lf, note).map(nameKey), false);
+	}
+
+	private async twinHashRemote(data: NoteData): Promise<string> {
+		return noteHash(data.content, data.tags.map(nameKey), false);
+	}
+
+	/** A local file without an id whose content and tags equal the remote note's. */
+	private async findUnlinkedTwin(data: NoteData, scan: Scan, claimed: Set<string>): Promise<LocalFile | null> {
+		if (scan.noId.length === 0 || data.deleted) return null;
+		const want = await this.twinHashRemote(data);
+		for (const lf of scan.noId) {
+			if (claimed.has(nameKey(lf.info.path))) continue;
+			if (!(await this.loadLocal(lf))) continue;
+			if ((await this.twinHashLocal(lf, lf.note as LocalNote)) === want) return lf;
+		}
+		return null;
+	}
+
+	/** Writes a remote note's id into the local file that another device created it from. */
+	private linkTwinAction(lf: LocalFile, id: string, data: NoteData, version: number): Action {
+		return {
+			kind: 'update-local',
+			category: 'change',
+			path: lf.info.path,
+			id,
+			describe: `link ${lf.info.path} to note ${id} (same content, created by another device)`,
+			run: async () => {
+				if (this.dryRun) {
+					this.log.info(`[dry-run] link ${lf.info.path} to note ${id}`);
+					return;
+				}
+				const note = lf.note as LocalNote;
+				const info = await this.assignId(lf.info.path, lf.text ?? '', note, { 'simplenote-id': id });
+				const pinned = data.systemTags.includes('pinned');
+				if (pinned && this.bookmarksAvailable()) (this.vault.bookmarks as BookmarkAdapter).setBookmarked(lf.info.path, true);
+				this.log.info(`linked ${lf.info.path} to note ${id} created by another device for the same file`);
+				this.state.notes[id] = {
+					id,
+					path: lf.info.path,
+					version,
+					contentHash: await this.hashRemote(data),
+					tags: data.tags,
+					systemTags: data.systemTags,
+					mtime: info.mtime,
+					size: info.size,
+					pinned,
+				};
+				delete this.state.pendingNew[lf.info.path];
+			},
+		};
+	}
+
+	// ---------------- duplicate cleanup ----------------
+
+	/**
+	 * Finds files that share one simplenote-id, or "Title (n).md" copies with the same content as "Title.md"
+	 * under another id, and moves the surplus copies to the Obsidian trash. A copy whose content differs from
+	 * the kept file and from the note on Simplenote is left alone and reported. Serialized with sync runs.
+	 */
+	cleanupDuplicates(): Promise<CleanupResult> {
+		const p = this.chain.then(() => this.runCleanup());
+		this.chain = p.catch(() => undefined);
+		return p;
+	}
+
+	private async runCleanup(): Promise<CleanupResult> {
+		const result: CleanupResult = { trashed: [], kept: [], skipped: [], notesTrashed: 0, dryRun: false };
+		if (!this.client.hasToken()) throw new AuthError('Not logged in');
+		const settings = this.settingsFn();
+		this.dryRun = settings.dryRun;
+		result.dryRun = this.dryRun;
+		this.state = this.store.load();
+		this.log.info(`duplicate cleanup start${this.dryRun ? ' [dry-run]' : ''}`);
+		const files: LocalFile[] = [];
+		for (const info of this.vault.listMarkdownFiles()) {
+			if (exclusionReason(info.path, info.size, settings)) continue;
+			const lf: LocalFile = { info, id: null, changed: true, excluded: null };
+			if (!(await this.loadLocal(lf))) continue;
+			lf.id = lf.note?.id ?? null;
+			files.push(lf);
+		}
+		// Copies in one folder differ in file name, hence in title: compare body and tags only.
+		const copyHash = (lf: LocalFile, note: LocalNote): Promise<string> => {
+			const body = splitContent(this.remoteContentFor(lf, note)).body;
+			return noteHash(`\n${body}`, this.localTags(lf, note).map(nameKey), false);
+		};
+		const remoteCopyHash = (data: NoteData): Promise<string> => noteHash(`\n${splitContent(data.content).body}`, data.tags.map(nameKey), false);
+		const hashes = new Map<LocalFile, string>();
+		for (const lf of files) hashes.set(lf, await copyHash(lf, lf.note as LocalNote));
+		const trashFile = async (lf: LocalFile, why: string): Promise<void> => {
+			if (this.dryRun) this.log.info(`[dry-run] trash ${lf.info.path} (${why})`);
+			else {
+				await this.vault.trash(lf.info.path);
+				this.state.pausedPaths = this.state.pausedPaths.filter((p) => nameKey(p) !== nameKey(lf.info.path));
+				delete this.state.problems[lf.info.path];
+				delete this.state.pendingNew[lf.info.path];
+				this.log.info(`trashed ${lf.info.path} (${why})`);
+			}
+			result.trashed.push(lf.info.path);
+		};
+		const gone = new Set<LocalFile>();
+
+		// 1. several files with one id
+		const byId = new Map<string, LocalFile[]>();
+		for (const lf of files) {
+			if (!lf.id) continue;
+			const list = byId.get(lf.id);
+			if (list) list.push(lf);
+			else byId.set(lf.id, [lf]);
+		}
+		for (const [id, list] of byId) {
+			if (list.length < 2) continue;
+			const keeper = this.pickKeeper(id, list);
+			const remote = await this.client.getNote(id);
+			const accepted = new Set<string>([hashes.get(keeper) as string]);
+			if (remote) accepted.add(await remoteCopyHash(remote.data));
+			result.kept.push(keeper.info.path);
+			for (const other of list) {
+				if (other === keeper) continue;
+				if (accepted.has(hashes.get(other) as string)) {
+					await trashFile(other, `copy of ${keeper.info.path}, same note ${id}`);
+					gone.add(other);
+				} else {
+					this.log.warn(`${other.info.path} shares note ${id} with ${keeper.info.path} but its text differs; left for you to merge by hand`);
+					result.skipped.push(other.info.path);
+				}
+			}
+		}
+
+		// 2. "Title (n).md" with the same content as "Title.md" in the same folder, under another id
+		const byName = new Map<string, LocalFile>();
+		for (const lf of files) {
+			if (gone.has(lf)) continue;
+			const base = basenameOfPath(lf.info.path);
+			if (stripCollisionSuffix(base) === base) byName.set(nameKey(lf.info.path), lf);
+		}
+		for (const lf of files) {
+			if (gone.has(lf) || !lf.id) continue;
+			const base = basenameOfPath(lf.info.path);
+			const plain = stripCollisionSuffix(base);
+			if (plain === base) continue;
+			const original = byName.get(nameKey(joinPath(folderOfPath(lf.info.path), plain)));
+			if (!original || !original.id || original.id === lf.id) continue;
+			if (hashes.get(original) !== hashes.get(lf)) {
+				this.log.warn(`${lf.info.path} looks like a copy of ${original.info.path} but its text differs; left alone`);
+				result.skipped.push(lf.info.path);
+				continue;
+			}
+			const remote = await this.client.getNote(lf.id);
+			if (remote && !remote.data.deleted) {
+				if (this.dryRun) this.log.info(`[dry-run] trash note ${lf.id} on Simplenote (duplicate of note ${original.id})`);
+				else {
+					let res = await this.client.postNote(lf.id, { deleted: true, modificationDate: this.now() / 1000 }, { baseVersion: remote.version });
+					if (res.outcome === 'conflict') res = await this.client.postNote(lf.id, { deleted: true, modificationDate: this.now() / 1000 }, { baseVersion: res.version });
+					this.log.info(`trashed note ${lf.id} on Simplenote (duplicate of note ${original.id})`);
+				}
+				result.notesTrashed++;
+			}
+			if (!this.dryRun) delete this.state.notes[lf.id];
+			await trashFile(lf, `copy of ${original.info.path} under a second note`);
+			gone.add(lf);
+		}
+		if (!this.dryRun) this.store.save(this.state);
+		this.log.info(`duplicate cleanup done: ${result.trashed.length} file(s) trashed, ${result.notesTrashed} note(s) trashed on Simplenote, ${result.skipped.length} left alone`);
+		return result;
 	}
 
 	// ---------------- actions ----------------

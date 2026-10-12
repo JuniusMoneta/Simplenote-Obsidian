@@ -33,7 +33,8 @@ Do the same on each device (Mac, Windows, iPhone). The release assets are `main.
 
 1. Settings → Simplenote Sync → enter the email → **Send code** → enter the code from the email →
    **Log in with code**. This is the same flow the Simplenote website uses. The resulting token is kept
-   in Obsidian's secret storage, never in `data.json`.
+   in Obsidian's secret storage, never in `data.json`. The token belongs to the vault, so two vaults on one
+   device can sync two Simplenote accounts (log in once per vault).
 2. Leave "Sync with Simplenote on this device" on (it is device-local).
 3. Optional: excluded folders, maximum note size (default 975 KB, just under Simplenote's own limit of about 1,000,000 bytes), dry-run mode.
 4. Click the ribbon icon or run **Simplenote: Sync now**.
@@ -74,6 +75,14 @@ Dry-run mode shows the same dialog and changes nothing.
   (iCloud for Windows briefly hides files).
 - A new file waits 2 minutes before a note is created, so that an id assigned by another device can arrive through the vault sync.
 - Conflict copies with a duplicated `simplenote-id` are paused and reported; they are never uploaded as new notes.
+- A second file is never created for a note whose file exists. A note that changes on Simplenote while its
+  file is unreadable (iCloud placeholder), blocked, paused, or excluded is applied once the file takes part
+  in a sync again.
+- A new file is linked to a note with identical content that another device created meanwhile (the vault
+  sync had not delivered the id yet), instead of getting a second note.
+- **Clean up duplicate copies of notes** moves `Title (2).md`-style copies to the Obsidian trash when their
+  text equals the kept file or the note on Simplenote, and trashes a duplicate note on Simplenote when a
+  copy carries a second id. Copies whose text differs are left alone and listed in the sync log.
 - Device-local state (cursor, versions) is kept in local storage, so every device syncs independently.
 - Uploads are throttled to 2 requests per second and resume after Obsidian restarts.
 
@@ -84,7 +93,8 @@ size limit, and folders in the excluded list. A synced file that becomes exclude
 
 ## Commands
 
-Sync now · Pause / resume sync · Full reconcile · Open sync log · Log out.
+Sync now · Pause / resume sync · Full reconcile · Open sync log · List excluded and failing files ·
+Clean up duplicate copies of notes · Log out.
 The status bar shows `Simplenote: synced 2m ago`, `syncing…`, `paused`, or `error`.
 
 ## Optional: link translation

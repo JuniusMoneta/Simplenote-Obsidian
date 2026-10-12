@@ -9,7 +9,9 @@ import { SyncEngine, type SyncStatus } from './sync';
 import { confirmPlan, ExcludedModal, firstRunDialog, LogModal } from './ui';
 import { LinkTranslatorImpl } from './links';
 
-const TOKEN_SECRET_ID = 'simplenote-sync-token';
+/** Secret storage is shared by all vaults on a device: the token id carries the vault id so that two vaults can use two accounts. */
+const TOKEN_SECRET_PREFIX = 'simplenote-sync-token';
+const LEGACY_TOKEN_SECRET_ID = 'simplenote-sync-token';
 const LS_DEVICE_SYNC = 'simplenote-sync:device-sync-enabled';
 const LS_STATE = 'simplenote-sync:state';
 const LS_LOG = 'simplenote-sync:log';
@@ -42,6 +44,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.migrateTokenSecret();
 		const persistLog = debounce((lines: string[]) => this.app.saveLocalStorage(LS_LOG, lines.slice(-500)), 2000, true);
 		const stored = this.app.loadLocalStorage(LS_LOG) as unknown;
 		this.log = new Logger(
@@ -113,6 +116,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		this.addCommand({ id: 'open-log', name: 'Open sync log', callback: () => new LogModal(this.app, () => this.log.getLines()).open() });
 		this.addCommand({ id: 'log-out', name: 'Log out', callback: () => void this.logout() });
 		this.addCommand({ id: 'list-excluded', name: 'List excluded and failing files', callback: () => this.openProblems() });
+		this.addCommand({ id: 'cleanup-duplicates', name: 'Clean up duplicate copies of notes', callback: () => void this.cleanupDuplicates() });
 
 		// file events (debounced per file, ignoring the plugin's own writes)
 		const kick = debounce(() => void this.syncNow('file changes'), FILE_EVENT_DEBOUNCE_MS, true);
@@ -180,19 +184,41 @@ export default class SimplenoteSyncPlugin extends Plugin {
 
 	// ----- account -----
 
+	/** Secret id of this vault's token. Obsidian's secret storage is device-wide, so the id carries the vault id. */
+	private tokenSecretId(): string {
+		const raw = (this.app as unknown as { appId?: string }).appId ?? this.app.vault.getName();
+		const vaultKey = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'vault';
+		return `${TOKEN_SECRET_PREFIX}-${vaultKey}`;
+	}
+
+	/**
+	 * Versions up to 0.4.1 stored the token under one id for all vaults, so two vaults on one device synced
+	 * the same account. The first vault to load takes the old token over; other vaults ask for a new login.
+	 */
+	private migrateTokenSecret(): void {
+		const legacy = this.app.secretStorage.getSecret(LEGACY_TOKEN_SECRET_ID);
+		if (!legacy) return;
+		if (!this.app.secretStorage.getSecret(this.tokenSecretId())) this.app.secretStorage.setSecret(this.tokenSecretId(), legacy);
+		this.app.secretStorage.setSecret(LEGACY_TOKEN_SECRET_ID, '');
+	}
+
+	private storedToken(): string | undefined {
+		return this.app.secretStorage.getSecret(this.tokenSecretId()) ?? undefined;
+	}
+
 	newClient(maxRetries?: number, http: HttpFn = obsidianHttp): SimperiumClient {
 		return new SimperiumClient({
 			appId: this.settings.appId,
 			apiKey: this.settings.apiKey,
 			http,
-			token: this.app.secretStorage.getSecret(TOKEN_SECRET_ID) ?? undefined,
+			token: this.storedToken(),
 			log: (m) => this.log.debug(`http: ${m}`),
 			maxRetries,
 		});
 	}
 
 	hasToken(): boolean {
-		return !!this.app.secretStorage.getSecret(TOKEN_SECRET_ID);
+		return !!this.storedToken();
 	}
 
 	/** Email-code login, step 1. Goes to app.simplenote.com, which Chromium can reach (unlike auth.simperium.com). */
@@ -207,7 +233,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		this.log.info('login: exchanging the email code for a token');
 		const probe = this.newClient(0);
 		const token = await probe.completeLoginCode(email, code);
-		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, token);
+		this.app.secretStorage.setSecret(this.tokenSecretId(), token);
 		this.client.setToken(token);
 		this.log.info(`logged in as ${email} (email code)`);
 		if (this.engine.status.kind === 'error') this.engine.resume();
@@ -220,7 +246,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		const probe = this.newClient(0);
 		probe.setToken(token);
 		await probe.indexPage({ limit: 1, data: false });
-		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, token);
+		this.app.secretStorage.setSecret(this.tokenSecretId(), token);
 		this.client.setToken(token);
 		this.log.info('login: pasted token verified and stored');
 		if (this.engine.status.kind === 'error') this.engine.resume();
@@ -228,7 +254,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 	}
 
 	async logout(): Promise<void> {
-		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, '');
+		this.app.secretStorage.setSecret(this.tokenSecretId(), '');
 		this.client.setToken(undefined);
 		this.log.info('logged out');
 		this.renderStatus({ kind: 'error', message: 'Not logged in' });
@@ -286,6 +312,25 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		} catch (e) {
 			this.log.error(`sync crashed: ${errorMessage(e)}`);
 			new Notice(`Simplenote sync error: ${errorMessage(e)}`);
+		}
+	}
+
+	async cleanupDuplicates(): Promise<void> {
+		if (!this.hasToken()) {
+			new Notice('Simplenote: not logged in.');
+			return;
+		}
+		new Notice('Simplenote: looking for duplicate copies…');
+		try {
+			const r = await this.engine.cleanupDuplicates();
+			const parts = [`${r.trashed.length} copy/copies moved to the Obsidian trash`];
+			if (r.notesTrashed > 0) parts.push(`${r.notesTrashed} duplicate note(s) moved to the Simplenote trash`);
+			if (r.skipped.length > 0) parts.push(`${r.skipped.length} copy/copies with different text left alone (see the sync log)`);
+			new Notice(`Simplenote${r.dryRun ? ' [dry-run]' : ''}: ${parts.join('; ')}.`, 12_000);
+			if (r.trashed.length > 0 && !r.dryRun) void this.syncNow('duplicate cleanup');
+		} catch (e) {
+			this.log.error(`duplicate cleanup failed: ${errorMessage(e)}`);
+			new Notice(`Simplenote: cleanup failed: ${errorMessage(e)}`);
 		}
 	}
 
