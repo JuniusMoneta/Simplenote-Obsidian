@@ -178,8 +178,16 @@ export default class SimplenoteSyncPlugin extends Plugin {
 	}
 
 	async login(email: string, password: string): Promise<void> {
+		this.log.info(`login: requesting a token for ${email} from ${this.settings.appId}`);
 		const probe = this.newClient();
-		const token = await probe.authorize(email, password);
+		let token: string;
+		try {
+			token = await probe.authorize(email, password);
+		} catch (e) {
+			this.log.error(`login failed: ${errorMessage(e)}`);
+			throw e;
+		}
+		this.log.info('login: token received; storing it in secret storage');
 		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, token);
 		this.client.setToken(token);
 		this.log.info(`logged in as ${email}`);
