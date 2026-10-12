@@ -27,6 +27,7 @@ import {
 	type TagStyle,
 	type LocalNote,
 } from './mapping';
+import { LEASE_NOTE_ID, type PushLease } from './lease';
 import { matchFirstRun, removeTitleLine, type FirstRunDecision, type FirstRunProposal, type LocalCandidate, type RemoteCandidate } from './firstrun';
 import { AuthError, SimperiumClient, SimperiumError, type IndexEntry, type NoteData } from './simperium';
 import type { NoteState, StateStore, SyncProblem, SyncState } from './state';
@@ -43,6 +44,8 @@ export interface EngineSettings {
 	dryRun: boolean;
 	translateLinks: boolean;
 	tagStyle?: TagStyle;
+	/** The vault is shared through a vault sync (iCloud, Obsidian Sync): only the device holding the push lease pushes. */
+	sharedVault?: boolean;
 }
 
 export interface ExcludedFile {
@@ -76,7 +79,7 @@ export interface PlanSummary {
 }
 
 export type SyncStatus =
-	| { kind: 'idle'; at: number; problems: number }
+	| { kind: 'idle'; at: number; problems: number; pullOnly?: string | null }
 	| { kind: 'syncing' }
 	| { kind: 'paused'; reason: string }
 	| { kind: 'error'; message: string };
@@ -124,6 +127,8 @@ export interface EngineDeps {
 	notice: (msg: string) => void;
 	onStatus?: (status: SyncStatus) => void;
 	translator?: LinkTranslator;
+	/** Push lease for shared vaults (used when the sharedVault setting is on). */
+	lease?: PushLease;
 }
 
 interface LocalFile {
@@ -178,6 +183,8 @@ export class SyncEngine {
 	private dryRun = false;
 	/** Paths of files the current plan will create, so link translation can resolve them during the batch. */
 	private planned = new Map<string, string>();
+	/** Name of the device holding the push lease while this device pulls only; null when this device pushes. */
+	pullOnly: string | null = null;
 	paused = false;
 	pauseReason = '';
 	status: SyncStatus = { kind: 'idle', at: 0, problems: 0 };
@@ -227,7 +234,12 @@ export class SyncEngine {
 	resume(): void {
 		this.paused = false;
 		const st = this.store.load();
-		this.setStatus({ kind: 'idle', at: st.lastSync, problems: Object.keys(st.problems).length });
+		this.setStatus({ kind: 'idle', at: st.lastSync, problems: Object.keys(st.problems).length, pullOnly: this.pullOnly });
+	}
+
+	/** Shared vault: the next sync takes the push lease over from whichever device holds it. */
+	takeOver(): void {
+		this.deps.lease?.requestTakeover();
 	}
 
 	/** Files that currently cannot sync, with what to do about them. */
@@ -309,12 +321,17 @@ export class SyncEngine {
 				} else throw e;
 			}
 			this.log.debug(`index: ${fetched.entries.length} entries, full=${full}`);
+			const lease = settings.sharedVault && !this.dryRun ? this.deps.lease : undefined;
+			for (const e of fetched.entries) this.deps.lease?.observe(e);
+			fetched.entries = fetched.entries.filter((e) => e.id !== LEASE_NOTE_ID);
 			await this.migratePinnedProperty();
 			let scan = await this.scanLocal(settings);
 			let preConfirmed = false;
 			if (!this.state.firstRunDone) {
 				if (!full) {
 					fetched = await this.client.fetchIndex();
+					for (const e of fetched.entries) this.deps.lease?.observe(e);
+					fetched.entries = fetched.entries.filter((e) => e.id !== LEASE_NOTE_ID);
 					full = true;
 				}
 				const ok = await this.runFirstRun(fetched.entries, scan);
@@ -326,7 +343,18 @@ export class SyncEngine {
 				preConfirmed = true;
 				scan = await this.scanLocal(settings);
 			}
-			const actions = await this.plan(fetched.entries, scan, full, now);
+			let actions = await this.plan(fetched.entries, scan, full, now);
+			if (lease) {
+				const d = await lease.decide(now);
+				const wasPullOnly = this.pullOnly;
+				this.pullOnly = d.holder ? null : (d.holderName ?? 'another device');
+				if (!d.holder) {
+					const held = actions.filter((a) => isRemoteWrite(a.kind));
+					actions = actions.filter((a) => !isRemoteWrite(a.kind));
+					if (wasPullOnly !== this.pullOnly) this.log.info(`pull only: ${this.pullOnly} holds the push lease; local changes reach Simplenote through that device`);
+					if (held.length > 0) this.log.debug(`${held.length} local change(s) wait for the push lease`);
+				} else if (wasPullOnly !== null) this.log.info('this device holds the push lease again');
+			} else this.pullOnly = null;
 			const summary = summarize(actions);
 			if (actions.length > 0) this.log.info(`plan: ${summary.change} change(s), ${summary.move} move(s), ${summary.trash} trash(es)`);
 			for (const d of summary.items) this.log.debug(`  ${d}`);
@@ -338,7 +366,7 @@ export class SyncEngine {
 					return { ...result, skipped: 'guard-declined' };
 				}
 			}
-			const remoteWrites = actions.some((a) => a.kind === 'push' || a.kind === 'merge' || a.kind === 'create-remote' || a.kind === 'trash-remote');
+			const remoteWrites = actions.some((a) => isRemoteWrite(a.kind));
 			if (remoteWrites && !this.state.backupDone) await this.backup(full ? fetched.entries : null);
 			let pullFailed = false;
 			let n = 0;
@@ -378,7 +406,7 @@ export class SyncEngine {
 			}
 			result.ok = result.errors.length === 0;
 			this.log.info(`sync done: pulled ${result.pulled}, pushed ${result.pushed}, trashed ${result.trashed}${result.errors.length ? `, ${result.errors.length} error(s)` : ''}`);
-			if (result.ok) this.setStatus({ kind: 'idle', at: now, problems: Object.keys(this.state.problems).length });
+			if (result.ok) this.setStatus({ kind: 'idle', at: now, problems: Object.keys(this.state.problems).length, pullOnly: this.pullOnly });
 			else this.setStatus({ kind: 'error', message: result.errors[0] ?? 'error' });
 			return result;
 		} catch (e) {
@@ -1525,6 +1553,10 @@ export class SyncEngine {
 }
 
 // ---------------- helpers ----------------
+
+function isRemoteWrite(kind: ActionKind): boolean {
+	return kind === 'push' || kind === 'merge' || kind === 'create-remote' || kind === 'trash-remote';
+}
 
 export function summarize(actions: Action[]): PlanSummary {
 	const s: PlanSummary = { trash: 0, move: 0, change: 0, causes: [], items: [] };

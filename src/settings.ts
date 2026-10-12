@@ -13,6 +13,8 @@ export interface SimplenoteSyncSettings {
 	translateLinks: boolean;
 	hideProperties: boolean;
 	tagStyle: 'inline' | 'property';
+	/** The vault is shared between devices through iCloud or Obsidian Sync: only one device pushes at a time. */
+	sharedVault: boolean;
 	appId: string;
 	apiKey: string;
 }
@@ -32,6 +34,7 @@ export const DEFAULT_SETTINGS: SimplenoteSyncSettings = {
 	translateLinks: false,
 	hideProperties: true,
 	tagStyle: 'inline',
+	sharedVault: false,
 	appId: DEFAULT_APP_ID,
 	apiKey: DEFAULT_API_KEY,
 };
@@ -165,6 +168,29 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 					this.plugin.setDeviceSyncEnabled(v);
 				}),
 			);
+
+		new Setting(containerEl)
+			.setName('Shared vault: one device pushes at a time')
+			.setDesc(
+				`Turn on when iCloud or Obsidian Sync shares this vault between devices that all run this plugin. One device holds a push lease; the others only pull, and their edits reach Simplenote through the holder. The lease moves by itself when the holder stops syncing for 3 minutes. Now: ${this.plugin.leaseInfo()}.`,
+			)
+			.addToggle((t) =>
+				t.setValue(s.sharedVault).onChange(async (v) => {
+					s.sharedVault = v;
+					await this.plugin.saveSettings();
+					this.display();
+				}),
+			);
+		if (s.sharedVault) {
+			new Setting(containerEl)
+				.setName('Push from this device')
+				.setDesc(`This device is "${this.plugin.deviceName()}". Takes the lease over now instead of waiting for the holder to go quiet.`)
+				.addButton((b) =>
+					b.setButtonText('Take over').onClick(() => {
+						void this.plugin.takeOverSync();
+					}),
+				);
+		}
 
 		new Setting(containerEl)
 			.setName('Sync interval while active (seconds)')

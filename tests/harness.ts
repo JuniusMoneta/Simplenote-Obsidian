@@ -1,3 +1,4 @@
+import { PushLease } from '../src/lease';
 import { Logger } from '../src/log';
 import { SimperiumClient } from '../src/simperium';
 import { MemoryStateStore } from '../src/state';
@@ -25,7 +26,9 @@ export interface Harness {
 	newDevice(): Promise<Harness>;
 }
 
-export async function makeHarness(opts: { fake?: FakeOptions; settings?: Partial<EngineSettings>; server?: FakeSimperium; vault?: MemoryVault; clock?: { now: number } } = {}): Promise<Harness> {
+export async function makeHarness(
+	opts: { fake?: FakeOptions; settings?: Partial<EngineSettings>; server?: FakeSimperium; vault?: MemoryVault; clock?: { now: number }; device?: { id: string; name: string } } = {},
+): Promise<Harness> {
 	const server = opts.server ?? new FakeSimperium(opts.fake);
 	if (!server.users.has('u')) server.addUser('u', 'p');
 	const clock = opts.clock ?? { now: 1_800_000_000_000 };
@@ -49,11 +52,14 @@ export async function makeHarness(opts: { fake?: FakeOptions; settings?: Partial
 		notices: [] as string[],
 		excluded: [] as string[],
 	};
+	const device = opts.device ?? { id: 'device0001', name: 'Test device' };
+	const lease = new PushLease({ client, deviceId: device.id, deviceName: device.name, now: () => clock.now, log: (m) => log.info(m) });
 	const deps: EngineDeps = {
 		vault,
 		client,
 		store,
 		log,
+		lease,
 		settings: () => settings,
 		now: () => clock.now,
 		confirmPlan: (s) => {
