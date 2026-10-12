@@ -136,6 +136,40 @@ export function exclusionReason(path: string, size: number | undefined, settings
 	return null;
 }
 
+// ---------- inline tag line ----------
+
+/** Obsidian inline tags: letters, digits, _, -, /; must contain a non-digit. */
+const INLINE_TAG_RE = /^[\p{L}\p{N}_\-/]+$/u;
+
+export function canBeInlineTag(tag: string): boolean {
+	return INLINE_TAG_RE.test(tag) && /[^\p{N}]/u.test(tag);
+}
+
+/** If the last non-blank line consists only of #tags, returns the tags and the body without that line. */
+export function splitTagLine(body: string): { body: string; tags: string[] } {
+	const lines = body.split('\n');
+	let i = lines.length - 1;
+	while (i >= 0 && (lines[i] ?? '').trim().length === 0) i--;
+	if (i < 0) return { body, tags: [] };
+	const line = (lines[i] ?? '').replace(/\r$/, '').trim();
+	const tokens = line.split(/\s+/);
+	if (!tokens.every((t) => t.startsWith('#') && t.length > 1 && canBeInlineTag(t.slice(1)))) return { body, tags: [] };
+	const tags = tokens.map((t) => t.slice(1));
+	// drop the tag line and the single blank line the plugin puts before it (a body that ended with
+	// one newline loses it; the plugin's own hash is taken from this converted form, so no push loop)
+	let end = i;
+	if (end > 0 && (lines[end - 1] ?? '').trim().length === 0) end--;
+	return { body: lines.slice(0, end).join('\n'), tags };
+}
+
+/** Appends a #tag line to a body, separated by one blank line. */
+export function appendTagLine(body: string, tags: string[]): string {
+	if (tags.length === 0) return body;
+	const line = tags.map((t) => `#${t}`).join(' ');
+	if (body.length === 0) return line;
+	return body.endsWith('\n') ? `${body}\n${line}` : `${body}\n\n${line}`;
+}
+
 // ---------- file -> note ----------
 
 export interface LocalNote {
@@ -171,6 +205,7 @@ export function fileToNote(text: string, basename: string): LocalNote {
 	let tags: string[] = [];
 	let pinned = false;
 	let storedTitle: string | null = null;
+	const tagLine = splitTagLine(fm.body);
 	if (fm.hasBlock && !fm.invalid) {
 		const d = fm.data;
 		id = typeof d['simplenote-id'] === 'string' && d['simplenote-id'].length > 0 ? d['simplenote-id'] : null;
@@ -179,11 +214,12 @@ export function fileToNote(text: string, basename: string): LocalNote {
 		const st = d['simplenote-title'];
 		storedTitle = typeof st === 'string' ? st : typeof st === 'number' || typeof st === 'boolean' ? String(st) : null;
 		const yaml = removeKeys(fm.yaml, MANAGED_KEYS);
-		body = joinFrontmatter(yaml, fm.body, fm.eol);
+		body = joinFrontmatter(yaml, tagLine.body, fm.eol);
 	} else {
-		body = fm.body;
+		body = tagLine.body;
 		if (fm.invalid) id = idFromRawYaml(fm.yaml);
 	}
+	for (const t of tagLine.tags) if (!tags.some((x) => nameKey(x) === nameKey(t))) tags.push(t);
 	const { title, usesTitleKey } = effectiveTitle(basename, storedTitle);
 	return { id, title, body, content: `${title}\n${body}`, tags, pinned, usesTitleKey, invalidFrontmatter: fm.invalid };
 }
@@ -205,24 +241,28 @@ export interface RenderedFile {
  * Builds file text for a remote note at a given basename. Plugin keys are merged into a
  * frontmatter block at the start of the body when there is a valid one; otherwise a new block is added.
  */
-export function noteToFileText(note: Pick<NoteData, 'content' | 'tags' | 'systemTags'>, id: string, basename: string): RenderedFile {
-	const { title, body } = splitContent(note.content);
+export type TagStyle = 'inline' | 'property';
+
+export function noteToFileText(note: Pick<NoteData, 'content' | 'tags' | 'systemTags'>, id: string, basename: string, tagStyle: TagStyle = 'inline'): RenderedFile {
+	const { title, body: rawBody } = splitContent(note.content);
 	const { otherTags } = splitTags(note.tags);
 	const pinned = note.systemTags.includes('pinned');
 	const needsTitleKey = nfc(title) !== nfc(basename);
+	const inlineTags = tagStyle === 'inline' ? otherTags.filter(canBeInlineTag) : [];
+	const propertyTags = otherTags.filter((t) => !inlineTags.includes(t));
 	const values: Record<string, unknown> = {
 		'simplenote-id': id,
-		tags: otherTags.length > 0 ? otherTags : undefined,
+		tags: propertyTags.length > 0 ? propertyTags : undefined,
 		pinned: pinned ? true : undefined,
 		'simplenote-title': needsTitleKey ? title : undefined,
 	};
-	const fm = splitFrontmatter(body);
+	const fm = splitFrontmatter(rawBody);
 	if (fm.hasBlock && !fm.invalid) {
 		const yaml = setKeys(removeKeys(fm.yaml, MANAGED_KEYS), values);
-		return { text: joinFrontmatter(yaml, fm.body, fm.eol), title };
+		return { text: joinFrontmatter(yaml, appendTagLine(fm.body, inlineTags), fm.eol), title };
 	}
 	const yaml = setKeys('', values);
-	return { text: joinFrontmatter(yaml, body), title };
+	return { text: joinFrontmatter(yaml, appendTagLine(rawBody, inlineTags)), title };
 }
 
 /** Basename a remote note should have, before collision handling. */

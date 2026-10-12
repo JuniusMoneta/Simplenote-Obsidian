@@ -34,7 +34,7 @@ export async function makeHarness(opts: { fake?: FakeOptions; settings?: Partial
 	await client.authorize('u', 'p');
 	const store = new MemoryStateStore();
 	const log = new Logger({ isDebug: () => true, now: () => clock.now });
-	const settings: EngineSettings = { excludedFolders: [], maxNoteSizeKb: 200, dryRun: false, translateLinks: false, ...opts.settings };
+	const settings: EngineSettings = { excludedFolders: [], maxNoteSizeKb: 200, dryRun: false, translateLinks: false, tagStyle: 'property', ...opts.settings };
 	const h = {
 		server,
 		vault,

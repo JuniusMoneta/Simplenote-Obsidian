@@ -23,6 +23,7 @@ import {
 	titleToFileName,
 	uniqueBasename,
 	type ExclusionReason,
+	type TagStyle,
 	type LocalNote,
 } from './mapping';
 import { matchFirstRun, removeTitleLine, type FirstRunDecision, type FirstRunProposal, type LocalCandidate, type RemoteCandidate } from './firstrun';
@@ -40,6 +41,7 @@ export interface EngineSettings {
 	maxNoteSizeKb: number;
 	dryRun: boolean;
 	translateLinks: boolean;
+	tagStyle?: TagStyle;
 }
 
 export interface ExcludedFile {
@@ -839,7 +841,7 @@ export class SyncEngine {
 			describe: `create ${path} from Simplenote`,
 			run: async () => {
 				const content = this.localContentFor(data);
-				const text = noteToFileText({ ...data, content }, id, basenameOfPath(path)).text;
+				const text = noteToFileText({ ...data, content }, id, basenameOfPath(path), this.settingsFn().tagStyle ?? 'inline').text;
 				if (this.dryRun) {
 					this.log.info(`[dry-run] create ${path}`);
 					return;
@@ -880,7 +882,7 @@ export class SyncEngine {
 		const folder = this.targetFolder(data, ctx, path);
 		const newPath = this.pickPath(folder, title, ctx, path);
 		const content = this.localContentFor(data);
-		const text = noteToFileText({ ...data, content }, id, basenameOfPath(newPath)).text;
+		const text = noteToFileText({ ...data, content }, id, basenameOfPath(newPath), this.settingsFn().tagStyle ?? 'inline').text;
 		if (this.dryRun) {
 			this.log.info(`[dry-run] update ${path}${newPath !== path ? ` and rename to ${newPath}` : ''}`);
 			return;

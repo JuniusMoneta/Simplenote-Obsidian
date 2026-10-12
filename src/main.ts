@@ -67,6 +67,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 				maxNoteSizeKb: this.settings.maxNoteSizeKb,
 				dryRun: this.settings.dryRun,
 				translateLinks: this.settings.translateLinks,
+				tagStyle: this.settings.tagStyle,
 			}),
 			confirmPlan: (summary) => confirmPlan(this.app, summary),
 			firstRun: (proposal, excluded) => firstRunDialog(this.app, proposal, excluded),

@@ -12,6 +12,7 @@ export interface SimplenoteSyncSettings {
 	debugLogging: boolean;
 	translateLinks: boolean;
 	hideProperties: boolean;
+	tagStyle: 'inline' | 'property';
 	appId: string;
 	apiKey: string;
 }
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: SimplenoteSyncSettings = {
 	debugLogging: false,
 	translateLinks: false,
 	hideProperties: true,
+	tagStyle: 'inline',
 	appId: DEFAULT_APP_ID,
 	apiKey: DEFAULT_API_KEY,
 };
@@ -235,6 +237,19 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 					s.debugLogging = v;
 					await this.plugin.saveSettings();
 				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Simplenote tags in notes')
+			.setDesc('Hashtag line at the end: tags are written as "#tag #other" on the last line of the note. Property: tags go into the tags property at the top. Tags that cannot be hashtags (with spaces or commas) always use the property.')
+			.addDropdown((d) =>
+				d
+					.addOptions({ inline: 'Hashtag line at the end', property: 'Property at the top' })
+					.setValue(s.tagStyle)
+					.onChange(async (v) => {
+						s.tagStyle = v === 'property' ? 'property' : 'inline';
+						await this.plugin.saveSettings();
+					}),
 			);
 
 		new Setting(containerEl)

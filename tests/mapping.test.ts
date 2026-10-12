@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+	appendTagLine,
+	splitTagLine,
 	basenameMatchesTitle,
 	decodeFolderTag,
 	encodeFolderTag,
@@ -86,11 +88,13 @@ describe('exclusions', () => {
 	});
 });
 
+const noteToFileText2 = (n: Parameters<typeof noteToFileText>[0], id: string, basename: string) => noteToFileText(n, id, basename, 'property');
+
 describe('fileToNote / noteToFileText round trip', () => {
 	const note = (content: string, tags: string[] = [], systemTags: string[] = ['markdown']) => ({ content, tags, systemTags });
 
 	it('plain note', () => {
-		const r = noteToFileText(note('My Note\nline 1\nline 2', ['obsidian:Work', 'todo']), 'id1', 'My Note');
+		const r = noteToFileText2(note('My Note\nline 1\nline 2', ['obsidian:Work', 'todo']), 'id1', 'My Note');
 		expect(r.text).toBe('---\nsimplenote-id: id1\ntags:\n  - todo\n---\nline 1\nline 2');
 		const back = fileToNote(r.text, 'My Note');
 		expect(back.id).toBe('id1');
@@ -105,7 +109,7 @@ describe('fileToNote / noteToFileText round trip', () => {
 		for (const t of titles) {
 			const content = `${t}\nbody`;
 			const basename = titleToFileName(t);
-			const r = noteToFileText(note(content), 'id', basename);
+			const r = noteToFileText2(note(content), 'id', basename);
 			const back = fileToNote(r.text, basename);
 			expect(back.content).toBe(content);
 			expect(back.usesTitleKey).toBe(true);
@@ -113,16 +117,16 @@ describe('fileToNote / noteToFileText round trip', () => {
 	});
 
 	it('does not add simplenote-title when the file name equals the title', () => {
-		const r = noteToFileText(note('Plain\nbody'), 'id', 'Plain');
+		const r = noteToFileText2(note('Plain\nbody'), 'id', 'Plain');
 		expect(r.text).not.toContain('simplenote-title');
 	});
 
 	it('collision suffix is local only', () => {
-		const r = noteToFileText(note('Foo\nbody'), 'id', 'Foo (2)');
+		const r = noteToFileText2(note('Foo\nbody'), 'id', 'Foo (2)');
 		expect(r.text).toContain('simplenote-title: Foo');
 		expect(fileToNote(r.text, 'Foo (2)').content).toBe('Foo\nbody');
 		// a real title "Report (2)" needs no key
-		const r2 = noteToFileText(note('Report (2)\nbody'), 'id', 'Report (2)');
+		const r2 = noteToFileText2(note('Report (2)\nbody'), 'id', 'Report (2)');
 		expect(r2.text).not.toContain('simplenote-title');
 		expect(fileToNote(r2.text, 'Report (2)').content).toBe('Report (2)\nbody');
 	});
@@ -136,7 +140,7 @@ describe('fileToNote / noteToFileText round trip', () => {
 
 	it('merges plugin keys into existing frontmatter in the body', () => {
 		const content = 'T\n---\nauthor: me\ntags:\n  - stale\n---\ntext';
-		const r = noteToFileText(note(content, ['a', 'b'], ['markdown', 'pinned']), 'id', 'T');
+		const r = noteToFileText2(note(content, ['a', 'b'], ['markdown', 'pinned']), 'id', 'T');
 		expect(r.text).toBe('---\nauthor: me\nsimplenote-id: id\ntags:\n  - a\n  - b\npinned: true\n---\ntext');
 		const back = fileToNote(r.text, 'T');
 		expect(back.content).toBe('T\n---\nauthor: me\n---\ntext');
@@ -146,7 +150,7 @@ describe('fileToNote / noteToFileText round trip', () => {
 
 	it('invalid YAML in the body is kept as text and a new block is added', () => {
 		const content = 'T\n---\nbad: [\n---\ntext';
-		const r = noteToFileText(note(content), 'id', 'T');
+		const r = noteToFileText2(note(content), 'id', 'T');
 		expect(r.text).toBe('---\nsimplenote-id: id\n---\n---\nbad: [\n---\ntext');
 		const back = fileToNote(r.text, 'T');
 		expect(back.content).toBe(content);
@@ -164,13 +168,13 @@ describe('fileToNote / noteToFileText round trip', () => {
 
 	it('does not normalize body whitespace or line endings', () => {
 		const content = 'T\r\nline  \r\n\r\n\ttab';
-		const r = noteToFileText(note(content), 'id', 'T');
+		const r = noteToFileText2(note(content), 'id', 'T');
 		expect(fileToNote(r.text, 'T').content).toBe(content);
 	});
 
 	it('accented names in NFD and NFC map to the same file', () => {
 		const nfd = 'café';
-		const r = noteToFileText(note(`${nfd}\nbody`), 'id', titleToFileName(nfd));
+		const r = noteToFileText2(note(`${nfd}\nbody`), 'id', titleToFileName(nfd));
 		expect(r.text).not.toContain('simplenote-title');
 		expect(fileToNote(r.text, 'café').content).toBe('café\nbody');
 	});
@@ -192,5 +196,40 @@ describe('basenameMatchesTitle', () => {
 		expect(basenameMatchesTitle('Foo (2)', 'Foo')).toBe(true);
 		expect(basenameMatchesTitle('Heading', '# Heading')).toBe(true);
 		expect(basenameMatchesTitle('Other', 'Foo')).toBe(false);
+	});
+});
+
+describe('inline tag line (default tag style)', () => {
+	const note = (content: string, tags: string[] = [], systemTags: string[] = ['markdown']) => ({ content, tags, systemTags });
+	it('writes tags as a hashtag line at the end and reads them back', () => {
+		const r = noteToFileText(note('T\nbody line', ['obsidian:F', 'todo', 'Work/sub', 'has space']), 'id', 'T');
+		expect(r.text).toBe('---\nsimplenote-id: id\ntags:\n  - has space\n---\nbody line\n\n#todo #Work/sub');
+		const back = fileToNote(r.text, 'T');
+		expect(back.content).toBe('T\nbody line');
+		expect(back.tags).toEqual(['has space', 'todo', 'Work/sub']);
+	});
+	it('round-trips bodies with and without trailing newline, and empty bodies', () => {
+		for (const body of ['x', 'x\n', '', 'a\n\nb\n\n']) {
+			const r = noteToFileText(note(`T\n${body}`, ['t']), 'id', 'T');
+			const back = fileToNote(r.text, 'T');
+			expect(back.tags).toEqual(['t']);
+			// one trailing newline is folded into the blank line before the tag line
+			expect(back.content).toBe(`T\n${body.endsWith('\n') ? body.slice(0, -1) : body}`);
+		}
+	});
+	it('a last line that is not only hashtags is body text', () => {
+		const back = fileToNote('---\nsimplenote-id: id\n---\nsee #todo later', 'T');
+		expect(back.tags).toEqual([]);
+		expect(back.content).toBe('T\nsee #todo later');
+		expect(fileToNote('---\nsimplenote-id: id\n---\n#123', 'T').tags).toEqual([]);
+	});
+	it('property tags and the tag line are merged on push', () => {
+		const back = fileToNote('---\nsimplenote-id: id\ntags:\n  - a\n---\nbody\n\n#b #a', 'T');
+		expect(back.tags).toEqual(['a', 'b']);
+	});
+	it('helpers', () => {
+		expect(appendTagLine('body', ['a'])).toBe('body\n\n#a');
+		expect(splitTagLine('body\n\n#a #b')).toEqual({ body: 'body', tags: ['a', 'b'] });
+		expect(splitTagLine('#a')).toEqual({ body: '', tags: ['a'] });
 	});
 });
