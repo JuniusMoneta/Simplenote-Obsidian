@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - '*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (must match manifest.json, e.g. 0.1.0)'
+        required: true
 
 permissions:
   contents: write
@@ -19,9 +24,38 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.version }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          manifest=$(node -p "require('./manifest.json').version")
+          if [ "$tag" != "$manifest" ]; then
+            echo "tag $tag does not match manifest.json version $manifest" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Create tag (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --tags origin "refs/tags/${{ steps.tag.outputs.tag }}" | grep -q .; then
+            echo "tag exists already"
+          else
+            git tag -a "${{ steps.tag.outputs.tag }}" -m "${{ steps.tag.outputs.tag }}"
+            git push origin "refs/tags/${{ steps.tag.outputs.tag }}"
+          fi
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" --title "$tag" --notes "See README.md and TESTING.md." main.js manifest.json styles.css
+          tag="${{ steps.tag.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" main.js manifest.json styles.css --clobber
+          else
+            gh release create "$tag" --title "$tag" --notes "See README.md and TESTING.md." main.js manifest.json styles.css
+          fi
