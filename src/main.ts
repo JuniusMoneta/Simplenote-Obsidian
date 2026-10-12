@@ -1,5 +1,7 @@
 import { Plugin } from 'obsidian';
+import { obsidianHttp } from './http';
 import { DEFAULT_SETTINGS, SimplenoteSettingTab, SimplenoteSyncSettings } from './settings';
+import { SimperiumClient } from './simperium';
 
 const TOKEN_SECRET_ID = 'simplenote-sync-token';
 const LS_DEVICE_SYNC = 'simplenote-sync:device-sync-enabled';
@@ -27,8 +29,19 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		return !!this.app.secretStorage.getSecret(TOKEN_SECRET_ID);
 	}
 
-	async login(_email: string, _password: string): Promise<void> {
-		throw new Error('not implemented yet (M1)');
+	newClient(): SimperiumClient {
+		return new SimperiumClient({
+			appId: this.settings.appId,
+			apiKey: this.settings.apiKey,
+			http: obsidianHttp,
+			token: this.app.secretStorage.getSecret(TOKEN_SECRET_ID) ?? undefined,
+		});
+	}
+
+	async login(email: string, password: string): Promise<void> {
+		const client = this.newClient();
+		const token = await client.authorize(email, password);
+		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, token);
 	}
 
 	async logout(): Promise<void> {

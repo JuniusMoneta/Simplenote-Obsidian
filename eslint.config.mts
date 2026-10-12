@@ -13,7 +13,8 @@ export default defineConfig(
 		'package.json',
 		'package-lock.json',
 		'tsconfig.json',
-		'itest/build.mjs',
+		'itest/**',
+		'dist',
 	]),
 	{
 		languageOptions: {
