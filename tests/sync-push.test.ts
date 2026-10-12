@@ -415,12 +415,18 @@ describe('no ccid dedupe on the server (verified live)', () => {
 		expect(h.engine.problems()).toHaveLength(0);
 	});
 
-	it('a file over the plugin size limit is announced the same way', async () => {
+	it('a file over the plugin size limit is announced, and syncs as soon as the limit is raised', async () => {
 		const h = await synced({ settings: { maxNoteSizeKb: 1 } });
 		h.vault.put('Other.md', `---\nsimplenote-id: b\n---\n${'x'.repeat(2000)}`);
 		await h.engine.sync();
 		expect(h.notices.some((n) => n.includes('"Other.md" is not syncing') && n.includes('maximum note size'))).toBe(true);
 		expect(h.engine.problems()).toHaveLength(1);
+		await h.engine.sync();
+		expect(h.notices.filter((n) => n.includes('"Other.md" is not syncing'))).toHaveLength(1);
+		h.settings.maxNoteSizeKb = 10;
+		await h.engine.sync();
+		expect(h.engine.problems()).toHaveLength(0);
+		expect(h.server.get('b')?.content).toBe(`Other\n${'x'.repeat(2000)}`);
 	});
 });
 

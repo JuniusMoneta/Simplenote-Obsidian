@@ -16,6 +16,8 @@ export interface NoteState {
 
 export interface SyncProblem {
 	kind: 'too-large' | 'error';
+	/** 'setting' = over the plugin's maximum note size; 'server' = Simplenote answered 413. */
+	source?: 'setting' | 'server';
 	detail: string;
 	since: number;
 	/** File size when the problem was recorded; the file is retried once its size changes. */

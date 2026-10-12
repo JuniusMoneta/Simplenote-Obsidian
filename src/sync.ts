@@ -223,15 +223,14 @@ export class SyncEngine {
 			.sort((a, b) => (a.path < b.path ? -1 : 1));
 	}
 
-	private recordProblem(path: string, kind: SyncProblem['kind'], detail: string): void {
+	private recordProblem(path: string, kind: SyncProblem['kind'], detail: string, source?: SyncProblem['source']): void {
 		const info = this.vault.stat(path);
 		const prev = this.state.problems[path];
 		const count = (prev?.count ?? 0) + 1;
-		this.state.problems[path] = { kind, detail, since: prev?.since ?? this.now(), size: info?.size ?? -1, mtime: info?.mtime ?? -1, count };
-		if (kind === 'error' && count < 3) return; // transient errors are retried quietly a couple of times
-		if (prev && prev.kind === kind && prev.size === (info?.size ?? -1)) return; // already announced for this file state
-		const problem: SyncProblem = { kind, detail, since: prev?.since ?? this.now(), size: info?.size ?? -1, mtime: info?.mtime ?? -1, count };
+		const problem: SyncProblem = { kind, source, detail, since: prev?.since ?? this.now(), size: info?.size ?? -1, mtime: info?.mtime ?? -1, count };
 		this.state.problems[path] = problem;
+		if (kind === 'error' && count < 3) return; // transient errors are retried quietly a couple of times
+		if (prev && prev.kind === kind && prev.source === source && prev.size === (info?.size ?? -1)) return; // already announced for this file state
 		const remedy = remedyFor(problem);
 		this.log.warn(`not syncing: ${path}: ${detail}. ${remedy}`);
 		this.deps.notice(`Simplenote: "${path}" is not syncing. ${detail}. ${remedy}`);
@@ -249,6 +248,7 @@ export class SyncEngine {
 		const p = this.state.problems[path];
 		if (!p) return false;
 		if (p.kind === 'error' && p.count < 3) return false;
+		if (p.kind === 'too-large' && p.source === 'setting') return false; // the limit may have changed: re-evaluated by the scan
 		return p.size === info.size && p.mtime === info.mtime;
 	}
 
@@ -339,7 +339,7 @@ export class SyncEngine {
 					if (e instanceof AuthError) throw e;
 					if (e instanceof SimperiumError && e.status === 413) {
 						const size = this.vault.stat(a.path)?.size ?? 0;
-						this.recordProblem(a.path, 'too-large', `Simplenote refused it as too large (${Math.round(size / 1024)} KB)`);
+						this.recordProblem(a.path, 'too-large', `Simplenote refused it as too large (${Math.round(size / 1024)} KB)`, 'server');
 						continue;
 					}
 					const msg = `${a.kind} ${a.path}: ${errorText(e)}`;
@@ -415,10 +415,11 @@ export class SyncEngine {
 			const lf: LocalFile = { info, id: null, changed: true, excluded: reason };
 			if (reason === 'too-large') {
 				const over = `larger than the maximum note size setting (${Math.round(info.size / 1024)} KB)`;
-				if (!this.state.problems[info.path] || this.state.problems[info.path]?.size !== info.size) this.recordProblem(info.path, 'too-large', over);
+				this.recordProblem(info.path, 'too-large', over, 'setting');
 				await noteId(info.path);
 				continue;
 			}
+			if (this.state.problems[info.path]?.source === 'setting') this.clearProblem(info.path); // now under the limit
 			if (reason) {
 				excluded.push(lf);
 				await noteId(info.path);
