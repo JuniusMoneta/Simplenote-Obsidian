@@ -91,6 +91,27 @@ Off by default. When on, `[[Note]]` is pushed as `[Note](simplenote://note/<id>)
 Simplenote website, and translated back on pull. Embeds, heading and block links, and links to notes
 without an id stay as text. **Turn it on or off on every device at the same time**; otherwise the devices push each other's version in a loop.
 
+## Login problems
+
+"Log in" talks to `auth.simperium.com` once to get a token. If that host is unreachable from Obsidian
+(the sync log shows `ERR_CONNECTION_TIMED_OUT`), get the token from a terminal that can reach it and paste
+it into "Paste a token instead" in the plugin settings. After that the plugin only uses `api.simperium.com`.
+
+PowerShell (replace the email and password):
+
+```
+$body = @{ username = "you@example.com"; password = "your password" } | ConvertTo-Json
+(Invoke-RestMethod -Method Post -Uri "https://auth.simperium.com/1/chalk-bump-f49/authorize/" -Headers @{ "X-Simperium-API-Key" = "c8c2b86337154cdabc989b23e30c6bf4" } -ContentType "application/json" -Body $body).access_token
+```
+
+macOS or Linux:
+
+```
+curl -s -X POST https://auth.simperium.com/1/chalk-bump-f49/authorize/ -H "X-Simperium-API-Key: c8c2b86337154cdabc989b23e30c6bf4" -H "Content-Type: application/json" -d '{"username":"you@example.com","password":"your password"}'
+```
+
+The output contains `access_token`. Repeated failed logins can get your IP blocked by that host for a while.
+
 ## Privacy
 
 Every synced note is stored in Simplenote **without end-to-end encryption**. Put sensitive notes in an

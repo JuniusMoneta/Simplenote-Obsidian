@@ -1,7 +1,7 @@
 import { requestUrl } from 'obsidian';
 import type { HttpFn } from './simperium';
 
-export const REQUEST_TIMEOUT_MS = 30_000;
+export const REQUEST_TIMEOUT_MS = 20_000;
 
 /** HttpFn backed by Obsidian's requestUrl (works on desktop and mobile, no CORS issues). Times out after 30 s. */
 export const obsidianHttp: HttpFn = async (req) => {

@@ -104,6 +104,37 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 				}),
 			);
 
+		let pastedToken = '';
+		new Setting(containerEl)
+			.setName('Paste a token instead')
+			.setDesc(
+				'If "Log in" cannot reach auth.simperium.com from Obsidian, get a token in a terminal (see README, "Login problems") and paste it here. It is kept in secret storage.',
+			)
+			.addText((t) => {
+				t.inputEl.type = 'password';
+				t.setPlaceholder('access token').onChange((v) => {
+					pastedToken = v.trim();
+				});
+			})
+			.addButton((b) =>
+				b.setButtonText('Use token').onClick(async () => {
+					if (!pastedToken) {
+						new Notice('Paste a token first.');
+						return;
+					}
+					b.setDisabled(true);
+					try {
+						await this.plugin.useToken(pastedToken);
+						new Notice('Simplenote: token accepted.');
+					} catch (e) {
+						new Notice(`Simplenote: token rejected: ${errorMessage(e)}`);
+					} finally {
+						b.setDisabled(false);
+						this.display();
+					}
+				}),
+			);
+
 		new Setting(containerEl).setName('Sync').setHeading();
 
 		new Setting(containerEl)

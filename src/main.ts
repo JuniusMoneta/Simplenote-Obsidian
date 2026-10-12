@@ -196,6 +196,19 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		void this.syncNow('login');
 	}
 
+	/** Accepts a token obtained outside Obsidian; verifies it with one index request on api.simperium.com. */
+	async useToken(token: string): Promise<void> {
+		this.log.info('login: verifying a pasted token against api.simperium.com');
+		const probe = this.newClient(0);
+		probe.setToken(token);
+		await probe.indexPage({ limit: 1, data: false });
+		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, token);
+		this.client.setToken(token);
+		this.log.info('login: pasted token verified and stored');
+		if (this.engine.status.kind === 'error') this.engine.resume();
+		void this.syncNow('login');
+	}
+
 	async logout(): Promise<void> {
 		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, '');
 		this.client.setToken(undefined);
