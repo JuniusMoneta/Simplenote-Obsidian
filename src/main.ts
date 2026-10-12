@@ -244,7 +244,10 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		if (!this.deviceSyncEnabled()) return;
 		if (!this.hasToken()) {
 			this.renderStatus({ kind: 'error', message: 'Not logged in' });
-			if (reason === 'command' || reason === 'ribbon') new Notice('Simplenote: log in first (plugin settings).');
+			if (reason === 'command' || reason === 'ribbon' || reason === 'status bar') {
+				new Notice('Simplenote: not logged in. Opening the plugin settings…', 5000);
+				this.openSettings();
+			}
 			return;
 		}
 		this.dirtyPaths.clear();
@@ -255,6 +258,14 @@ export default class SimplenoteSyncPlugin extends Plugin {
 			this.log.error(`sync crashed: ${errorMessage(e)}`);
 			new Notice(`Simplenote sync error: ${errorMessage(e)}`);
 		}
+	}
+
+	/** Opens this plugin's settings tab (app.setting is not in the public typings but is stable). */
+	openSettings(): void {
+		const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+		if (!setting) return;
+		setting.open();
+		setting.openTabById(this.manifest.id);
 	}
 
 	private renderStatus(s: SyncStatus): void {
