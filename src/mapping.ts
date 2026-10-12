@@ -119,7 +119,7 @@ export interface ExclusionSettings {
 	maxNoteSizeKb: number;
 }
 
-export type ExclusionReason = 'not-markdown' | 'dot-folder' | 'excalidraw' | 'excluded-folder' | 'too-large';
+export type ExclusionReason = 'not-markdown' | 'dot-folder' | 'excalidraw' | 'excluded-folder' | 'too-large' | 'case-conflict';
 
 export function exclusionReason(path: string, size: number | undefined, settings: ExclusionSettings): ExclusionReason | null {
 	if (!path.endsWith('.md')) return 'not-markdown';

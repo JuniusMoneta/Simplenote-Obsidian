@@ -303,9 +303,22 @@ export class SyncEngine {
 		const pathKeys = new Set<string>();
 		const idFiles = new Map<string, LocalFile[]>();
 		const paused = new Set(this.state.pausedPaths.map(nameKey));
+		// Simplenote tags are case-insensitive: two folders that differ only by case map to one tag.
+		const canonicalFolder = new Map<string, string>();
+		for (const f of [...this.vault.listFolders()].sort()) if (!canonicalFolder.has(nameKey(f))) canonicalFolder.set(nameKey(f), f);
+		const warnedFolders = new Set<string>();
 		for (const info of this.vault.listMarkdownFiles()) {
 			pathKeys.add(nameKey(info.path));
-			const reason = exclusionReason(info.path, info.size, settings);
+			let reason = exclusionReason(info.path, info.size, settings);
+			const folder = folderOfPath(info.path);
+			const canonical = canonicalFolder.get(nameKey(folder));
+			if (!reason && folder && canonical !== undefined && canonical !== folder) {
+				reason = 'case-conflict';
+				if (!warnedFolders.has(folder)) {
+					warnedFolders.add(folder);
+					this.log.warn(`folder "${folder}" differs only by case from "${canonical}"; its notes are skipped (Simplenote tags are case-insensitive)`);
+				}
+			}
 			const lf: LocalFile = { info, id: null, changed: true, excluded: reason };
 			if (reason) {
 				excluded.push(lf);

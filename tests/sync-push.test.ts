@@ -282,6 +282,19 @@ describe('create, delete, move, tags, pinned (M4)', () => {
 		expect(h.server.notes.size).toBe(2);
 	});
 
+	it('folders that differ only by case: the second one is skipped with a warning', async () => {
+		const h = await synced();
+		h.vault.put('Work/A.md', 'a');
+		h.vault.put('work/B.md', 'b');
+		await h.engine.sync();
+		h.advance(NEW_FILE_WAIT_MS + 1);
+		await h.engine.sync();
+		expect(h.server.notes.size).toBe(3);
+		expect(h.vault.get('Work/A.md')).toContain('simplenote-id');
+		expect(h.vault.get('work/B.md')).toBe('b');
+		expect(logText(h)).toContain('differs only by case');
+	});
+
 	it('mass-change guard asks before trashing many files', async () => {
 		const h = await makeHarness();
 		for (let i = 0; i < 12; i++) seed(h, `n${i}`, `N${i}\nbody`);
