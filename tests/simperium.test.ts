@@ -106,8 +106,23 @@ describe('SimperiumClient', () => {
 		expect(r.version).toBe(2);
 	});
 
-	it('drops a duplicate ccid from a second login', async () => {
+	it('the real server does not dedupe ccids: the same stale edit applies twice (recorded behavior)', async () => {
 		const { server, username, password } = fakeWithUser();
+		const c1 = makeClient(server);
+		const c2 = makeClient(server);
+		await c1.authorize(username, password);
+		await c2.authorize(username, password);
+		await c1.postNote('x1', { content: 'base' });
+		const hash = await noteHash('base\nedit', [], false);
+		const ccid = await computeCcid('x1', 1, hash);
+		await c1.postNote('x1', { content: 'base\nedit' }, { baseVersion: 1, ccid });
+		const r2 = await c2.postNote('x1', { content: 'base\nedit' }, { baseVersion: 1, ccid });
+		expect(r2.version).toBe(3);
+		expect(r2.data.content).toBe('base\nedit\nedit');
+	});
+
+	it('a server that dedupes ccids is handled too', async () => {
+		const { server, username, password } = fakeWithUser({ duplicateCcidStatus: 409 });
 		const c1 = makeClient(server);
 		const c2 = makeClient(server);
 		await c1.authorize(username, password);

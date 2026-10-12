@@ -44,6 +44,12 @@ async function rawRequest(client: SimperiumClient, token: string, method: 'GET' 
 	});
 }
 
+/** Permanent delete: Simplenote answers 400 unless the note is trashed first. */
+async function purge(client: SimperiumClient, token: string, id: string): Promise<{ status: number }> {
+	await rawRequest(client, token, 'POST', `/i/${id}?response=0`, JSON.stringify({ deleted: true, modificationDate: nowSec() }));
+	return rawRequest(client, token, 'DELETE', `/i/${id}`);
+}
+
 async function main(): Promise<void> {
 	if (!USER || !PASS) {
 		console.error('Set SN_TEST_USER and SN_TEST_PASS (a dedicated test account).');
@@ -76,7 +82,7 @@ async function main(): Promise<void> {
 		const stale = full.entries.filter((e) => e.d?.tags.includes(MARKER_TAG));
 		if (stale.length > 0) {
 			console.log(`  cleaning ${stale.length} leftover itest notes`);
-			for (const e of stale) await rawRequest(client, token1, 'DELETE', `/i/${e.id}`);
+			for (const e of stale) await purge(client, token1, e.id);
 		}
 
 		step('Create a note');
@@ -157,7 +163,7 @@ async function main(): Promise<void> {
 		created.push(sizeId);
 		await client.postNote(sizeId, { ...base, content: 'itest size\n' });
 		let largest = 0;
-		for (const kb of [100, 200, 500, 1000, 2000, 5000]) {
+		for (const kb of [100, 200, 250, 300, 400, 500, 1000]) {
 			const content = `itest size\n${'x'.repeat(kb * 1024 - 11)}`;
 			const r = await rawRequest(client, token1, 'POST', `/i/${sizeId}?response=0`, JSON.stringify({ content }));
 			const ok = r.status === 200 || r.status === 412;
@@ -178,7 +184,7 @@ async function main(): Promise<void> {
 		step('Permanent delete and since cursor');
 		const beforeDel = await client.fetchIndex();
 		const d = await rawRequest(client, token1, 'DELETE', `/i/${id}`);
-		check(d.status === 200, `DELETE → HTTP ${d.status}`);
+		check(d.status === 200, `DELETE (after trashing) → HTTP ${d.status}`);
 		created.splice(created.indexOf(id), 1);
 		const afterDel = await client.fetchIndex(beforeDel.current);
 		const delEntry = afterDel.entries.find((e) => e.id === id);
@@ -187,7 +193,7 @@ async function main(): Promise<void> {
 		step('Cleanup');
 		const token = (client as unknown as { token?: string }).token ?? '';
 		for (const cid of created) {
-			const r = await rawRequest(client, token, 'DELETE', `/i/${cid}`);
+			const r = await purge(client, token, cid);
 			console.log(`  deleted ${cid} → HTTP ${r.status}`);
 		}
 	}

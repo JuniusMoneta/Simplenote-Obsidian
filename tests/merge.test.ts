@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mergeStrings } from '../src/merge';
+import { applyChanges, mergeStrings } from '../src/merge';
 
 describe('mergeStrings', () => {
 	it('returns the other side when one side is unchanged', () => {
@@ -47,5 +47,18 @@ describe('mergeStrings', () => {
 	});
 	it('identical edits are not duplicated', () => {
 		expect(mergeStrings('a\nb', 'a\nz', 'a\nz')).toBe('a\nz');
+	});
+});
+
+describe('applyChanges (server-style patch application)', () => {
+	it('applies an identical append twice, like the real server', () => {
+		expect(applyChanges('base', 'base\nedit', 'base\nedit')).toBe('base\nedit\nedit');
+	});
+	it('applies non-overlapping edits', () => {
+		expect(applyChanges('T\nline one\nline two', 'T\nline one\nline two web', 'T\nline one local\nline two')).toBe('T\nline one local\nline two web');
+	});
+	it('applies deletions and insertions at the start', () => {
+		expect(applyChanges('a\nb\nc', 'a\nb\nc\nd', 'x\nb\nc')).toBe('x\nb\nc\nd');
+		expect(applyChanges('a\nb\nc', 'a\nb\nc', 'a\nc')).toBe('a\nc');
 	});
 });

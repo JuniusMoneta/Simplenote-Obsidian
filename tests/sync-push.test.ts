@@ -347,3 +347,54 @@ describe('create, delete, move, tags, pinned (M4)', () => {
 		expect(h.server.version('a')).toBe(2);
 	});
 });
+
+describe('no ccid dedupe on the server (verified live)', () => {
+	it('an identical edit pushed by another device during the sync is adopted, not applied twice', async () => {
+		const h = await makeHarness();
+		seed(h, 'a', 'Note\nline one', ['obsidian:F']);
+		await h.engine.sync();
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\n---\nline one\nappended');
+		// simulate device A pushing the very same edit after this device fetched the index but before it pushes
+		let fired = false;
+		h.server.opts.beforeRequest = (req) => {
+			if (!fired && req.url.includes('/i/a')) {
+				fired = true;
+				h.server.seed('a', { content: 'Note\nline one\nappended', tags: ['obsidian:F'] });
+			}
+		};
+		const r = await h.engine.sync();
+		expect(r.ok).toBe(true);
+		expect(fired).toBe(true);
+		expect(h.server.get('a')?.content).toBe('Note\nline one\nappended');
+		expect(h.server.version('a')).toBe(2);
+		expect(h.store.load().notes.a?.version).toBe(2);
+		expect(logText(h)).toContain('identical content already on Simplenote');
+	});
+
+	it('a different edit pushed meanwhile is merged by the server', async () => {
+		const h = await makeHarness();
+		seed(h, 'a', 'Note\nline one\nline two', ['obsidian:F']);
+		await h.engine.sync();
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\n---\nline one local\nline two');
+		let fired = false;
+		h.server.opts.beforeRequest = (req) => {
+			if (!fired && req.url.includes('/i/a')) {
+				fired = true;
+				h.server.seed('a', { content: 'Note\nline one\nline two web', tags: ['obsidian:F'] });
+			}
+		};
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note\nline one local\nline two web');
+		expect(h.vault.get('F/Note.md')).toContain('line two web');
+	});
+
+	it('an oversize note is reported, not treated as a sync failure', async () => {
+		const h = await makeHarness({ fake: { maxContentBytes: 50 }, settings: { maxNoteSizeKb: 200 } });
+		seed(h, 'a', 'Note\nshort');
+		await h.engine.sync();
+		h.vault.put('Note.md', `---\nsimplenote-id: a\n---\n${'x'.repeat(100)}`);
+		const r = await h.engine.sync();
+		expect(r.ok).toBe(true);
+		expect(logText(h)).toContain('too large');
+	});
+});

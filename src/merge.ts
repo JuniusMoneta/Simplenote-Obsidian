@@ -122,3 +122,65 @@ export function similarity(a: string, b: string): number {
 	for (const v of m) if (v !== -1) common++;
 	return (2 * common) / (la.length + lb.length);
 }
+
+/**
+ * Applies the change base -> next onto `current` as a patch (what Simperium does with a
+ * stale-base POST). Unlike mergeStrings, an edit already present in `current` is applied again.
+ * Used by the fake server to reproduce the real server's behavior.
+ */
+export function applyChanges(base: string, current: string, next: string): string {
+	if (base === next) return current;
+	if (base === current) return next;
+	const b = base.split('\n');
+	const c = current.split('\n');
+	const n = next.split('\n');
+	const mn = lcsMatch(b, n);
+	const mc = lcsMatch(b, c);
+	const before = new Map<number, string[]>();
+	const after = new Map<number, string[]>();
+	const atStart: string[] = [];
+	const del = new Set<number>();
+	const push = (m: Map<number, string[]>, k: number, v: string[]): void => {
+		const arr = m.get(k);
+		if (arr) arr.push(...v);
+		else m.set(k, [...v]);
+	};
+	let i = 0;
+	let inx = 0;
+	for (;;) {
+		let k = i;
+		while (k < b.length && mn[k] === -1) k++;
+		const kn = k < b.length ? (mn[k] as number) : n.length;
+		if (k > i || kn > inx) {
+			for (let t = i; t < k; t++) if ((mc[t] as number) !== -1) del.add(mc[t] as number);
+			const ins = n.slice(inx, kn);
+			if (ins.length > 0) {
+				let firstDel = -1;
+				for (let t = i; t < k; t++) {
+					if (mc[t] !== -1) {
+						firstDel = mc[t] as number;
+						break;
+					}
+				}
+				let prev = i - 1;
+				while (prev >= 0 && mc[prev] === -1) prev--;
+				if (firstDel !== -1) push(before, firstDel, ins);
+				else if (prev >= 0) push(after, mc[prev] as number, ins);
+				else if (k < b.length && mc[k] !== -1) push(before, mc[k] as number, ins);
+				else atStart.push(...ins);
+			}
+		}
+		if (k >= b.length) break;
+		i = k + 1;
+		inx = kn + 1;
+	}
+	const out = [...atStart];
+	for (let j = 0; j < c.length; j++) {
+		const bf = before.get(j);
+		if (bf) out.push(...bf);
+		if (!del.has(j)) out.push(c[j] as string);
+		const af = after.get(j);
+		if (af) out.push(...af);
+	}
+	return out.join('\n');
+}

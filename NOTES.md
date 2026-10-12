@@ -66,12 +66,39 @@ If the server refuses (405/409/440), the plugin fetches the base version from `/
 (`src/merge.ts`: line-level diff3, character-level inside conflicting regions, never drops text) and
 posts again against the current version.
 
-## PENDING live checks (fill in from `npm run itest`)
+## Live check results (`npm run itest`, 2026-10-12, dedicated test account)
 
-- Server-side merge of a stale-base POST: **PENDING**
-- ccid deduplication across two logins: **PENDING** (if the server does NOT dedupe, the
-  "pull before push, skip when equal" rule in sync.ts still prevents double application of
-  identical content; a different-content duplicate is merged by the server or locally.)
-- Which tag characters the website shows: **PENDING**
-- Largest accepted note: **PENDING** (default limit 200 KB)
-- Simplenote internal link format on the website (`simplenote://note/<id>`): **PENDING**
+- **Server-side merge: confirmed.** A POST to `/v/1` while the server was at v2 answered HTTP 200 with
+  both edits merged (`line one edited` + `line two edited`), new version 3.
+- **ccid deduplication: NOT provided over HTTP.** The same change with the same ccid sent twice from two
+  logins answered 200 both times and was applied twice (version 3 → 5, the appended line appears twice).
+  The server applies a stale-base POST as a patch, so an identical edit arriving from two devices would be
+  duplicated. Consequences for the plugin (implemented):
+  1. Every sync pulls first; a local edit whose content already equals the server copy is adopted, not pushed.
+  2. Immediately before each push the plugin re-reads the note. If the server version moved and the server
+     content equals what the plugin wants to push, it adopts that version and skips the push. If the content
+     differs, the push goes ahead against the old base and the server merges.
+  3. The deterministic ccid is still sent (harmless) in case the server starts honoring it.
+  Residual risk: another device pushing the identical edit in the fraction of a second between that
+  re-read and the POST would still duplicate lines. No text is lost in that case.
+- **Unchanged POST:** outcome reported as unchanged, version unchanged (412 as documented).
+- **Two logins give different tokens.** Each device keeps its own token.
+- **Cursor format:** opaque 24-character hex string (for example `6acc5308a5cc2b14e584c9ac`).
+- **Trashed notes** appear in the since-cursor index with `deleted: true` and full data.
+- **Permanently deleted notes do NOT appear in the since-cursor index**; GET answers 404. Such deletions are
+  only noticed by the full reconcile (daily, or the "Full reconcile" command), which is what the plugin does.
+- **Permanent DELETE requires the note to be trashed first**; otherwise the server answers HTTP 400.
+  The plugin never deletes permanently; the itest cleanup trashes first.
+- **Tags over the API are stored verbatim and case-sensitively:** `obsidian:Case` and `obsidian:case` were
+  both kept; spaces, commas, colons, `&`, `/`, accented letters and emoji were all stored. The web app's tag
+  index is case-insensitive (`tag-hash.ts`), so the plugin keeps comparing tags case-insensitively and skips
+  a second folder that differs from another only by case. How the website *displays* tags with spaces or
+  commas is still to be checked by eye (see below).
+- **Maximum note size:** 200 KB of content accepted, 500 KB rejected with HTTP 413. The exact limit lies in
+  between (re-run itest for a finer probe: 250/300/400 KB). Default maximum note size set to 190 KB.
+  A 413 on push is logged as a warning and the file is skipped until it shrinks.
+
+### Still to check by eye on the Simplenote website
+
+- Which of the test tags show, and how (`obsidian:with space`, `obsidian:comma,here`, `obsidian:emoji😀`).
+- Whether `[Title](simplenote://note/<id>)` opens the note when clicked (link translation, M7).

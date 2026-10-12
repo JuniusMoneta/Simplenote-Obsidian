@@ -1,5 +1,5 @@
 import type { HttpFn, HttpRequest, HttpResponse, NoteData } from '../src/simperium';
-import { mergeStrings } from '../src/merge';
+import { applyChanges } from '../src/merge';
 
 interface StoredNote {
 	version: number;
@@ -14,8 +14,10 @@ export interface FakeOptions {
 	apiKey?: string;
 	/** What to do with a POST against a stale version: merge like the real server, or refuse with this status. */
 	staleVersion?: 'merge' | 405 | 409;
-	/** Status for a duplicate ccid: 409 (protocol doc) or 200 (silently drop). */
-	duplicateCcidStatus?: 200 | 409;
+	/** Duplicate ccid handling. The real server (verified 2026-10-12) ignores ccids: 'none'. 409 and 200 keep older assumptions testable. */
+	duplicateCcidStatus?: 'none' | 200 | 409;
+	/** Hook called before every request (tests simulate another device acting in a race window). */
+	beforeRequest?: (req: HttpRequest) => void;
 	maxContentBytes?: number;
 	/** Case-fold tags like Simplenote (keeps the first spelling). */
 	caseInsensitiveTags?: boolean;
@@ -36,7 +38,8 @@ export class FakeSimperium {
 			appId: opts.appId ?? 'chalk-bump-f49',
 			apiKey: opts.apiKey ?? 'c8c2b86337154cdabc989b23e30c6bf4',
 			staleVersion: opts.staleVersion ?? 'merge',
-			duplicateCcidStatus: opts.duplicateCcidStatus ?? 409,
+			duplicateCcidStatus: opts.duplicateCcidStatus ?? 'none',
+			beforeRequest: opts.beforeRequest ?? (() => undefined),
 			maxContentBytes: opts.maxContentBytes ?? 1_000_000,
 			caseInsensitiveTags: opts.caseInsensitiveTags ?? true,
 		};
@@ -88,6 +91,7 @@ export class FakeSimperium {
 
 	private handle(req: HttpRequest): HttpResponse {
 		this.requests.push(req);
+		this.opts.beforeRequest(req);
 		if (this.failNext && this.failNext.count > 0) {
 			this.failNext.count--;
 			return { status: this.failNext.status, headers: {}, text: 'injected failure' };
@@ -181,7 +185,7 @@ export class FakeSimperium {
 		const respond = u.searchParams.get('response') === '1';
 		const existing = this.notes.get(id);
 		const current = existing?.data ?? null;
-		if (existing && ccid && existing.ccids.has(ccid)) {
+		if (existing && ccid && this.opts.duplicateCcidStatus !== 'none' && existing.ccids.has(ccid)) {
 			if (this.opts.duplicateCcidStatus === 409) return { status: 409, headers: { 'X-Simperium-Version': String(existing.version) }, text: 'duplicate ccid' };
 			return { status: 200, headers: { 'X-Simperium-Version': String(existing.version) }, text: respond && current ? JSON.stringify(current) : '' };
 		}
@@ -210,7 +214,7 @@ export class FakeSimperium {
 			}
 			const base = existing.history.get(baseVersion);
 			if (base && typeof patch.content === 'string') {
-				next.content = mergeStrings(base.content, current.content, patch.content);
+				next.content = applyChanges(base.content, current.content, patch.content);
 			}
 		}
 		if (this.opts.caseInsensitiveTags) {

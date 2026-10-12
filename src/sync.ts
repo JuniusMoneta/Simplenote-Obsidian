@@ -260,6 +260,10 @@ export class SyncEngine {
 					else if (a.kind === 'trash-local' || a.kind === 'trash-remote') result.trashed++;
 				} catch (e) {
 					if (e instanceof AuthError) throw e;
+					if (e instanceof SimperiumError && e.status === 413) {
+						this.log.warn(`${a.path}: Simplenote rejected the note as too large (HTTP 413); lower the maximum note size setting or shorten the note`);
+						continue;
+					}
 					const msg = `${a.kind} ${a.path}: ${errorText(e)}`;
 					this.log.error(msg);
 					result.errors.push(msg);
@@ -878,6 +882,32 @@ export class SyncEngine {
 		if (this.dryRun) {
 			this.log.info(`[dry-run] push ${lf.info.path} (base v${baseVersion})`);
 			return;
+		}
+		// The server does not dedupe ccids (NOTES.md): re-check the version right before pushing so an
+		// identical edit that another device pushed meanwhile is adopted instead of applied twice.
+		const current = await this.client.getNote(id);
+		if (current && current.version !== baseVersion) {
+			if ((await this.hashRemote(current.data)) === hash) {
+				this.log.info(`${lf.info.path}: identical content already on Simplenote (v${current.version}); not pushing`);
+				this.state.notes[id] = {
+					id,
+					path: lf.info.path,
+					version: current.version,
+					contentHash: await this.hashLocal(lf, note),
+					tags: current.data.tags,
+					systemTags: current.data.systemTags,
+					mtime: lf.info.mtime,
+					size: lf.info.size,
+				};
+				delete this.state.pendingDeletes[id];
+				delete this.state.pendingEmpty[id];
+				return;
+			}
+			if (st) {
+				tags = mergeTags(st.tags, this.localTags(lf, note), current.data.tags);
+				systemTags = setPinned(current.data.systemTags, pinned);
+			}
+			this.log.debug(`${lf.info.path}: Simplenote is at v${current.version}, pushing against v${baseVersion} (server merges)`);
 		}
 		const body: Partial<NoteData> = { content, tags, systemTags, deleted: false, modificationDate: this.now() / 1000 };
 		let res = await this.client.postNote(id, body, { baseVersion, ccid });
