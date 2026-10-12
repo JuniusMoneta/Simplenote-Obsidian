@@ -163,13 +163,14 @@ export default class SimplenoteSyncPlugin extends Plugin {
 
 	// ----- account -----
 
-	newClient(): SimperiumClient {
+	newClient(maxRetries?: number): SimperiumClient {
 		return new SimperiumClient({
 			appId: this.settings.appId,
 			apiKey: this.settings.apiKey,
 			http: obsidianHttp,
 			token: this.app.secretStorage.getSecret(TOKEN_SECRET_ID) ?? undefined,
 			log: (m) => this.log.debug(`http: ${m}`),
+			maxRetries,
 		});
 	}
 
@@ -179,7 +180,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 
 	async login(email: string, password: string): Promise<void> {
 		this.log.info(`login: requesting a token for ${email} from ${this.settings.appId}`);
-		const probe = this.newClient();
+		const probe = this.newClient(0); // login: one attempt, fail fast
 		let token: string;
 		try {
 			token = await probe.authorize(email, password);
