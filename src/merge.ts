@@ -110,3 +110,15 @@ export function mergeStrings(base: string, a: string, b: string): string {
 	const lineConflict: Conflict<string> = (bl, al, bbl) => mergeChars(bl.join('\n'), al.join('\n'), bbl.join('\n')).split('\n');
 	return diff3(base.split('\n'), a.split('\n'), b.split('\n'), lineConflict).join('\n');
 }
+
+/** Line-based similarity 0..1 (2 * LCS / (len a + len b)). */
+export function similarity(a: string, b: string): number {
+	if (a === b) return 1;
+	const la = a.split('\n');
+	const lb = b.split('\n');
+	if (la.length + lb.length === 0) return 1;
+	const m = lcsMatch(la, lb);
+	let common = 0;
+	for (const v of m) if (v !== -1) common++;
+	return (2 * common) / (la.length + lb.length);
+}
