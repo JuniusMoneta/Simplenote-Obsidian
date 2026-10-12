@@ -23,7 +23,7 @@ export const DEFAULT_SETTINGS: SimplenoteSyncSettings = {
 	email: '',
 	syncIntervalSeconds: 30,
 	excludedFolders: [],
-	maxNoteSizeKb: 500,
+	maxNoteSizeKb: 1000,
 	dryRun: false,
 	debugLogging: false,
 	translateLinks: false,
@@ -36,7 +36,6 @@ export const MIN_SYNC_INTERVAL = 30;
 
 export class SimplenoteSettingTab extends PluginSettingTab {
 	plugin: SimplenoteSyncPlugin;
-	private password = '';
 
 	constructor(app: App, plugin: SimplenoteSyncPlugin) {
 		super(app, plugin);
@@ -119,43 +118,12 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 					}),
 			);
 
-		new Setting(containerEl).setName('Other ways to log in').setHeading();
-
-		new Setting(containerEl)
-			.setName('Password')
-			.setDesc('Password login talks to auth.simperium.com, which some networks and Obsidian on desktop cannot reach. Use the email code if this fails.')
-			.addText((t) => {
-				t.inputEl.type = 'password';
-				t.inputEl.autocomplete = 'current-password';
-				t.setPlaceholder('Simplenote password').onChange((v) => {
-					this.password = v;
-				});
-			})
-			.addButton((b) =>
-				b.setButtonText('Log in with password').onClick(async () => {
-					if (!s.email || !this.password) {
-						new Notice('Enter email and password first.');
-						return;
-					}
-					b.setDisabled(true);
-					new Notice('Simplenote: logging in…', 4000);
-					try {
-						await this.plugin.login(s.email, this.password);
-						this.password = '';
-						new Notice('Simplenote: logged in.');
-					} catch (e) {
-						new Notice(`Simplenote login failed: ${errorMessage(e)}`);
-					} finally {
-						b.setDisabled(false);
-						this.display();
-					}
-				}),
-			);
+		new Setting(containerEl).setName('Advanced login').setHeading();
 
 		let pastedToken = '';
 		new Setting(containerEl)
 			.setName('Paste a token')
-			.setDesc('A Simperium access token obtained elsewhere (see README, "Login problems"). Kept in secret storage.')
+			.setDesc('Fallback: a Simperium access token obtained elsewhere (see README). Kept in secret storage.')
 			.addText((t) => {
 				t.inputEl.type = 'password';
 				t.setPlaceholder('access token').onChange((v) => {
@@ -221,7 +189,7 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Maximum note size (KB)')
-			.setDesc('Larger files are skipped and logged.')
+			.setDesc('Larger files are not uploaded. Simplenote itself refuses notes around 1 MB; refused notes are reported as sync problems.')
 			.addText((t) =>
 				t.setValue(String(s.maxNoteSizeKb)).onChange(async (v) => {
 					const n = Number.parseInt(v, 10);

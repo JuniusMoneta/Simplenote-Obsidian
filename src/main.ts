@@ -1,5 +1,5 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile, debounce } from 'obsidian';
-import { nodeHttpsOrNull, obsidianHttp } from './http';
+import { obsidianHttp } from './http';
 import { Logger } from './log';
 import { ObsidianVault } from './obsidian-vault';
 import { DEFAULT_SETTINGS, errorMessage, MIN_SYNC_INTERVAL, SimplenoteSettingTab, SimplenoteSyncSettings } from './settings';
@@ -34,7 +34,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 	private statusEl: HTMLElement | null = null;
 	private timer: number | null = null;
 	private statusTimer: number | null = null;
-	private lastStatus: SyncStatus = { kind: 'idle', at: 0 };
+	private lastStatus: SyncStatus = { kind: 'idle', at: 0, problems: 0 };
 	private readonly dirtyPaths = new Set<string>();
 
 	async onload(): Promise<void> {
@@ -83,10 +83,11 @@ export default class SimplenoteSyncPlugin extends Plugin {
 			this.statusEl = this.addStatusBarItem();
 			this.statusEl.addClass('simplenote-sync-status');
 			this.statusEl.onClickEvent(() => {
-				void this.syncNow('status bar');
+				if (this.engine.problems().length > 0) this.openProblems();
+				else void this.syncNow('status bar');
 			});
 		}
-		this.renderStatus({ kind: 'idle', at: this.engine.lastSyncAt() });
+		this.renderStatus({ kind: 'idle', at: this.engine.lastSyncAt(), problems: this.engine.problems().length });
 		this.statusTimer = this.registerIntervalSafe(() => this.renderStatus(this.lastStatus), 30_000);
 
 		this.addCommand({ id: 'sync-now', name: 'Sync now', callback: () => void this.syncNow('command') });
@@ -107,7 +108,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		this.addCommand({ id: 'full-reconcile', name: 'Full reconcile', callback: () => void this.syncNow('full reconcile', true) });
 		this.addCommand({ id: 'open-log', name: 'Open sync log', callback: () => new LogModal(this.app, () => this.log.getLines()).open() });
 		this.addCommand({ id: 'log-out', name: 'Log out', callback: () => void this.logout() });
-		this.addCommand({ id: 'list-excluded', name: 'List excluded files', callback: () => new ExcludedModal(this.app, () => this.engine.excludedFiles()).open() });
+		this.addCommand({ id: 'list-excluded', name: 'List excluded and failing files', callback: () => this.openProblems() });
 
 		// file events (debounced per file, ignoring the plugin's own writes)
 		const kick = debounce(() => void this.syncNow('file changes'), FILE_EVENT_DEBOUNCE_MS, true);
@@ -204,25 +205,6 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		void this.syncNow('login');
 	}
 
-	async login(email: string, password: string): Promise<void> {
-		const nodeHttps = nodeHttpsOrNull();
-		this.log.info(`login: requesting a token for ${email} from ${this.settings.appId} via ${nodeHttps ? 'Node https (desktop)' : 'requestUrl'}`);
-		const probe = this.newClient(0, nodeHttps ?? obsidianHttp); // login: one attempt, fail fast
-		let token: string;
-		try {
-			token = await probe.authorize(email, password);
-		} catch (e) {
-			this.log.error(`login failed: ${errorMessage(e)}`);
-			throw e;
-		}
-		this.log.info('login: token received; storing it in secret storage');
-		this.app.secretStorage.setSecret(TOKEN_SECRET_ID, token);
-		this.client.setToken(token);
-		this.log.info(`logged in as ${email}`);
-		if (this.engine.status.kind === 'error') this.engine.resume();
-		void this.syncNow('login');
-	}
-
 	/** Accepts a token obtained outside Obsidian; verifies it with one index request on api.simperium.com. */
 	async useToken(token: string): Promise<void> {
 		this.log.info('login: verifying a pasted token against api.simperium.com');
@@ -286,6 +268,14 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		}
 	}
 
+	openProblems(): void {
+		new ExcludedModal(
+			this.app,
+			() => this.engine.excludedFiles(),
+			() => this.engine.problems(),
+		).open();
+	}
+
 	/** Opens this plugin's settings tab (app.setting is not in the public typings but is stable). */
 	openSettings(): void {
 		const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
@@ -312,6 +302,10 @@ export default class SimplenoteSyncPlugin extends Plugin {
 				break;
 			default:
 				text = s.at > 0 ? `Simplenote: synced ${ago(Date.now() - s.at)}` : 'Simplenote: not synced yet';
+				if (s.problems > 0) {
+					text += ` · ${s.problems} not syncing`;
+					this.statusEl.addClass('simplenote-sync-status-error');
+				}
 		}
 		if (this.settings.dryRun) text += ' [dry-run]';
 		this.statusEl.setText(text);

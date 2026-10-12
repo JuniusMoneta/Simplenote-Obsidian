@@ -262,15 +262,15 @@ describe('create, delete, move, tags, pinned (M4)', () => {
 	});
 
 	it('files that become excluded are left alone on both sides', async () => {
-		const h = await synced({ settings: { maxNoteSizeKb: 1 } });
-		h.vault.put('Other.md', `---\nsimplenote-id: b\n---\n${'x'.repeat(2000)}`);
+		const h = await synced({ settings: { excludedFolders: ['Keep'] } });
+		await h.vault.rename('Other.md', 'Keep/Other.md');
 		await h.engine.sync();
 		h.advance(SUSPICIOUS_WAIT_MS * 2);
 		await h.engine.sync();
 		expect(h.server.get('b')?.deleted).toBe(false);
 		expect(h.server.get('b')?.content).toBe('Other\nbody');
-		expect(logText(h)).toContain('excluded: Other.md (larger than the maximum note size');
-		expect(h.engine.excludedFiles().map((e) => e.path)).toEqual(['Other.md']);
+		expect(logText(h)).toContain('excluded: Keep/Other.md (in an excluded folder');
+		expect(h.engine.excludedFiles().map((e) => e.path)).toEqual(['Keep/Other.md']);
 	});
 
 	it('excluded folders and dot folders never sync', async () => {
@@ -389,13 +389,77 @@ describe('no ccid dedupe on the server (verified live)', () => {
 		expect(h.vault.get('F/Note.md')).toContain('line two web');
 	});
 
-	it('an oversize note is reported, not treated as a sync failure', async () => {
+	it('an oversize note is announced once with a remedy, retried only when it changes, and clears itself', async () => {
 		const h = await makeHarness({ fake: { maxContentBytes: 50 }, settings: { maxNoteSizeKb: 200 } });
 		seed(h, 'a', 'Note\nshort');
 		await h.engine.sync();
 		h.vault.put('Note.md', `---\nsimplenote-id: a\n---\n${'x'.repeat(100)}`);
+		let r = await h.engine.sync();
+		expect(r.ok).toBe(true);
+		expect(h.notices.filter((n) => n.includes('is not syncing'))).toHaveLength(1);
+		expect(h.notices[0]).toContain('Shorten the note');
+		expect(h.engine.problems().map((p) => p.path)).toEqual(['Note.md']);
+		expect(h.engine.status).toMatchObject({ kind: 'idle', problems: 1 });
+		const posts = h.server.requests.filter((q) => q.method === 'POST').length;
+		await h.engine.sync();
+		expect(h.server.requests.filter((q) => q.method === 'POST').length).toBe(posts); // not retried while unchanged
+		expect(h.notices.filter((n) => n.includes('is not syncing'))).toHaveLength(1);
+		// the note must not be trashed on the server while blocked
+		h.advance(SUSPICIOUS_WAIT_MS * 2);
+		await h.engine.sync();
+		expect(h.server.get('a')?.deleted).toBe(false);
+		// shrink it: syncs again, problem cleared
+		h.vault.put('Note.md', '---\nsimplenote-id: a\n---\nsmall');
+		r = await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note\nsmall');
+		expect(h.engine.problems()).toHaveLength(0);
+	});
+
+	it('a file over the plugin size limit is announced the same way', async () => {
+		const h = await synced({ settings: { maxNoteSizeKb: 1 } });
+		h.vault.put('Other.md', `---\nsimplenote-id: b\n---\n${'x'.repeat(2000)}`);
+		await h.engine.sync();
+		expect(h.notices.some((n) => n.includes('"Other.md" is not syncing') && n.includes('maximum note size'))).toBe(true);
+		expect(h.engine.problems()).toHaveLength(1);
+	});
+});
+
+describe('vanished files and remote trash (iCloud eviction)', () => {
+	it('a file that vanishes long enough to trash the note, then comes back, restores the note instead of being deleted', async () => {
+		const h = await synced();
+		const text = h.vault.get('Other.md') ?? '';
+		h.vault.remove('Other.md');
+		await h.engine.sync();
+		h.advance(SUSPICIOUS_WAIT_MS + 1);
+		await h.engine.sync();
+		expect(h.server.get('b')?.deleted).toBe(true);
+		// iCloud brings the file back unchanged
+		h.vault.put('Other.md', text);
 		const r = await h.engine.sync();
 		expect(r.ok).toBe(true);
-		expect(logText(h)).toContain('too large');
+		expect(h.vault.has('Other.md')).toBe(true);
+		expect(h.vault.trashed).toHaveLength(0);
+		expect(h.server.get('b')?.deleted).toBe(false);
+		expect(h.server.get('b')?.content).toBe('Other\nbody');
+		expect(h.store.load().notes.b?.path).toBe('Other.md');
+		expect(logText(h)).toContain('restoring its note');
+	});
+
+	it('a note trashed on the web removes the local file only when it is unchanged, and says so', async () => {
+		const h = await synced();
+		h.server.seed('b', { content: 'Other\nbody', deleted: true });
+		await h.engine.sync();
+		expect(h.vault.has('Other.md')).toBe(false);
+		expect(h.notices.some((n) => n.includes('moved to the Obsidian trash') && n.includes('Other.md'))).toBe(true);
+	});
+
+	it('a note trashed on the web while the file was edited locally keeps the file and restores the note', async () => {
+		const h = await synced();
+		h.server.seed('b', { content: 'Other\nbody', deleted: true });
+		h.vault.put('Other.md', '---\nsimplenote-id: b\n---\nbody edited locally');
+		await h.engine.sync();
+		expect(h.vault.has('Other.md')).toBe(true);
+		expect(h.server.get('b')?.deleted).toBe(false);
+		expect(h.server.get('b')?.content).toBe('Other\nbody edited locally');
 	});
 });

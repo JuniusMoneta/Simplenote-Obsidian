@@ -14,6 +14,16 @@ export interface NoteState {
 	recheck?: string;
 }
 
+export interface SyncProblem {
+	kind: 'too-large' | 'error';
+	detail: string;
+	since: number;
+	/** File size when the problem was recorded; the file is retried once its size changes. */
+	size: number;
+	mtime: number;
+	count: number;
+}
+
 export interface PendingDelete {
 	path: string;
 	since: number;
@@ -32,6 +42,10 @@ export interface SyncState {
 	pausedPaths: string[];
 	/** Excluded files already reported in the log (path -> reason). */
 	knownExcluded: Record<string, string>;
+	/** Files that cannot sync right now (path -> problem). Cleared when the file syncs again. */
+	problems: Record<string, SyncProblem>;
+	/** Notes this device trashed on Simplenote because the file vanished (id -> path). If the file comes back, the note is restored. */
+	trashedByMe: Record<string, string>;
 	backupDone: boolean;
 	firstRunDone: boolean;
 	lastFullReconcile: number;
@@ -47,6 +61,8 @@ export function emptyState(): SyncState {
 		pendingEmpty: {},
 		pausedPaths: [],
 		knownExcluded: {},
+		problems: {},
+		trashedByMe: {},
 		backupDone: false,
 		firstRunDone: false,
 		lastFullReconcile: 0,
@@ -81,6 +97,8 @@ export function normalizeState(raw: unknown): SyncState {
 	if (r.pendingEmpty && typeof r.pendingEmpty === 'object') s.pendingEmpty = { ...r.pendingEmpty };
 	if (Array.isArray(r.pausedPaths)) s.pausedPaths = r.pausedPaths.filter((p): p is string => typeof p === 'string');
 	if (r.knownExcluded && typeof r.knownExcluded === 'object') s.knownExcluded = { ...r.knownExcluded };
+	if (r.problems && typeof r.problems === 'object') s.problems = { ...r.problems };
+	if (r.trashedByMe && typeof r.trashedByMe === 'object') s.trashedByMe = { ...r.trashedByMe };
 	s.backupDone = r.backupDone === true;
 	s.firstRunDone = r.firstRunDone === true;
 	if (typeof r.lastFullReconcile === 'number') s.lastFullReconcile = r.lastFullReconcile;

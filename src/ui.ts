@@ -191,28 +191,41 @@ export function firstRunDialog(app: App, proposal: FirstRunProposal, excluded: E
 	return new Promise((resolve) => new FirstRunModal(app, proposal, excluded, resolve).open());
 }
 
-/** "List excluded files" command. */
+/** "List excluded and failing files" command, also opened from the status bar. */
 export class ExcludedModal extends Modal {
 	constructor(
 		app: App,
 		private readonly excluded: () => ExcludedFile[],
+		private readonly problems: () => { path: string; problem: { detail: string; since: number }; remedy: string }[],
 	) {
 		super(app);
 	}
 
 	onOpen(): void {
-		this.setTitle('Files excluded from Simplenote sync');
+		this.setTitle('Simplenote sync: files not syncing');
+		const problems = this.problems();
 		const items = this.excluded();
-		if (items.length === 0) {
-			this.contentEl.createEl('p', { text: 'No files are excluded.' });
+		if (problems.length === 0 && items.length === 0) {
+			this.contentEl.createEl('p', { text: 'Every Markdown file in the vault is syncing.' });
 			return;
 		}
-		this.contentEl.createEl('p', { text: `${items.length} file(s). Reasons come from the exclusion rules and the plugin settings.` });
-		list(
-			this.contentEl,
-			items.map((e) => `${e.path}  —  ${describeExclusion(e.reason)}`),
-			1000,
-		);
+		if (problems.length > 0) {
+			this.contentEl.createEl('p', { text: `${problems.length} file(s) could not be synced. Each one is retried as soon as it changes.` });
+			const ul = this.contentEl.createEl('ul', { cls: 'simplenote-sync-list' });
+			for (const p of problems) {
+				const li = ul.createEl('li');
+				li.createEl('strong', { text: p.path });
+				li.createEl('div', { text: `${p.problem.detail}. ${p.remedy}` });
+			}
+		}
+		if (items.length > 0) {
+			this.contentEl.createEl('p', { text: `${items.length} file(s) excluded on purpose by the exclusion rules or the settings:` });
+			list(
+				this.contentEl,
+				items.map((e) => `${e.path}  —  ${describeExclusion(e.reason)}`),
+				1000,
+			);
+		}
 	}
 
 	onClose(): void {

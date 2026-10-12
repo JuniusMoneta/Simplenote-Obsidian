@@ -33,8 +33,7 @@ Do the same on each device (Mac, Windows, iPhone). The release assets are `main.
 
 1. Settings → Simplenote Sync → enter the email → **Send code** → enter the code from the email →
    **Log in with code**. This is the same flow the Simplenote website uses. The resulting token is kept
-   in Obsidian's secret storage, never in `data.json`. Password login and a paste-a-token field exist
-   as alternatives (see "Login problems").
+   in Obsidian's secret storage, never in `data.json`.
 2. Leave "Sync with Simplenote on this device" on (it is device-local).
 3. Optional: excluded folders, maximum note size (default 500 KB; Simplenote rejects notes around 1 MB), dry-run mode.
 4. Click the ribbon icon or run **Simplenote: Sync now**.
@@ -95,30 +94,10 @@ without an id stay as text. **Turn it on or off on every device at the same time
 
 ## Login problems
 
-The email-code login talks to `app.simplenote.com`, which works from Obsidian on all platforms.
-Password login talks to `auth.simperium.com`, which has been seen to drop or reject connections from some
-networks and to demand a TLS renegotiation that Chromium (and so Obsidian) refuses; use the email code instead.
-
-If login still fails (the sync log shows `ERR_CONNECTION_TIMED_OUT` or `ERR_CONNECTION_CLOSED`), get the
-token from a terminal and paste it into "Paste a token instead" in the plugin settings. After that the
-plugin only uses `api.simperium.com`. Note: on Windows use `curl.exe`, not `Invoke-RestMethod`, which
-also refuses the renegotiation.
-
-PowerShell (replace the email and password):
-
-```
-[IO.File]::WriteAllText("$env:TEMP\sn.json", '{"username":"you@example.com","password":"your password"}')
-curl.exe -sS -X POST https://auth.simperium.com/1/chalk-bump-f49/authorize/ -H "X-Simperium-API-Key: c8c2b86337154cdabc989b23e30c6bf4" -H "Content-Type: application/json" --data-binary "@$env:TEMP\sn.json"
-Remove-Item "$env:TEMP\sn.json"
-```
-
-macOS or Linux:
-
-```
-curl -s -X POST https://auth.simperium.com/1/chalk-bump-f49/authorize/ -H "X-Simperium-API-Key: c8c2b86337154cdabc989b23e30c6bf4" -H "Content-Type: application/json" -d '{"username":"you@example.com","password":"your password"}'
-```
-
-The output contains `access_token`. Repeated failed logins can get your IP blocked by that host for a while.
+Login uses the Simplenote account service at `app.simplenote.com` (email code), the same flow as the
+website, and works from Obsidian on all platforms. If it ever fails, a Simperium access token obtained
+elsewhere can be pasted into "Paste a token" in the settings; the token the website stores in its local
+storage (`stored_user`) works too.
 
 ## Privacy
 

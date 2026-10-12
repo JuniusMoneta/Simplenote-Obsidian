@@ -27,7 +27,7 @@ import {
 } from './mapping';
 import { matchFirstRun, removeTitleLine, type FirstRunDecision, type FirstRunProposal, type LocalCandidate, type RemoteCandidate } from './firstrun';
 import { AuthError, SimperiumClient, SimperiumError, type IndexEntry, type NoteData } from './simperium';
-import type { NoteState, StateStore, SyncState } from './state';
+import type { NoteState, StateStore, SyncProblem, SyncState } from './state';
 import type { FileInfo, VaultAdapter } from './vault';
 
 export const NEW_FILE_WAIT_MS = 2 * 60 * 1000;
@@ -72,7 +72,11 @@ export interface PlanSummary {
 	items: string[];
 }
 
-export type SyncStatus = { kind: 'idle'; at: number } | { kind: 'syncing' } | { kind: 'paused'; reason: string } | { kind: 'error'; message: string };
+export type SyncStatus =
+	| { kind: 'idle'; at: number; problems: number }
+	| { kind: 'syncing' }
+	| { kind: 'paused'; reason: string }
+	| { kind: 'error'; message: string };
 
 export interface SyncResult {
 	ok: boolean;
@@ -121,6 +125,8 @@ interface LocalFile {
 interface Scan {
 	files: LocalFile[];
 	byId: Map<string, LocalFile>;
+	/** Ids carried by excluded or blocked files: present locally, but not synced. */
+	presentIds: Set<string>;
 	noId: LocalFile[];
 	excluded: LocalFile[];
 	pathKeys: Set<string>;
@@ -159,7 +165,7 @@ export class SyncEngine {
 	private planned = new Map<string, string>();
 	paused = false;
 	pauseReason = '';
-	status: SyncStatus = { kind: 'idle', at: 0 };
+	status: SyncStatus = { kind: 'idle', at: 0, problems: 0 };
 
 	constructor(deps: EngineDeps) {
 		this.deps = deps;
@@ -205,7 +211,45 @@ export class SyncEngine {
 
 	resume(): void {
 		this.paused = false;
-		this.setStatus({ kind: 'idle', at: this.store.load().lastSync });
+		const st = this.store.load();
+		this.setStatus({ kind: 'idle', at: st.lastSync, problems: Object.keys(st.problems).length });
+	}
+
+	/** Files that currently cannot sync, with what to do about them. */
+	problems(): { path: string; problem: SyncProblem; remedy: string }[] {
+		const st = this.state ?? this.store.load();
+		return Object.entries(st.problems)
+			.map(([path, problem]) => ({ path, problem, remedy: remedyFor(problem) }))
+			.sort((a, b) => (a.path < b.path ? -1 : 1));
+	}
+
+	private recordProblem(path: string, kind: SyncProblem['kind'], detail: string): void {
+		const info = this.vault.stat(path);
+		const prev = this.state.problems[path];
+		const count = (prev?.count ?? 0) + 1;
+		this.state.problems[path] = { kind, detail, since: prev?.since ?? this.now(), size: info?.size ?? -1, mtime: info?.mtime ?? -1, count };
+		if (kind === 'error' && count < 3) return; // transient errors are retried quietly a couple of times
+		if (prev && prev.kind === kind && prev.size === (info?.size ?? -1)) return; // already announced for this file state
+		const problem: SyncProblem = { kind, detail, since: prev?.since ?? this.now(), size: info?.size ?? -1, mtime: info?.mtime ?? -1, count };
+		this.state.problems[path] = problem;
+		const remedy = remedyFor(problem);
+		this.log.warn(`not syncing: ${path}: ${detail}. ${remedy}`);
+		this.deps.notice(`Simplenote: "${path}" is not syncing. ${detail}. ${remedy}`);
+	}
+
+	private clearProblem(path: string): void {
+		if (this.state.problems[path]) {
+			delete this.state.problems[path];
+			this.log.info(`syncing again: ${path}`);
+		}
+	}
+
+	/** True when the file has not changed since its problem was recorded (no point retrying). */
+	private stillBlocked(path: string, info: FileInfo): boolean {
+		const p = this.state.problems[path];
+		if (!p) return false;
+		if (p.kind === 'error' && p.count < 3) return false;
+		return p.size === info.size && p.mtime === info.mtime;
 	}
 
 	/** Runs a sync. Calls are serialized; a call made while a sync runs is coalesced into one follow-up run. */
@@ -282,24 +326,33 @@ export class SyncEngine {
 			if (remoteWrites && !this.state.backupDone) await this.backup(full ? fetched.entries : null);
 			let pullFailed = false;
 			let n = 0;
+			const trashedLocally: string[] = [];
 			for (const a of actions) {
 				try {
 					await a.run();
+					if (a.path) this.clearProblem(a.path);
 					if (a.kind === 'create-local' || a.kind === 'update-local') result.pulled++;
 					else if (a.kind === 'push' || a.kind === 'merge' || a.kind === 'create-remote') result.pushed++;
 					else if (a.kind === 'trash-local' || a.kind === 'trash-remote') result.trashed++;
+					if (a.kind === 'trash-local') trashedLocally.push(a.path);
 				} catch (e) {
 					if (e instanceof AuthError) throw e;
 					if (e instanceof SimperiumError && e.status === 413) {
-						this.log.warn(`${a.path}: Simplenote rejected the note as too large (HTTP 413); lower the maximum note size setting or shorten the note`);
+						const size = this.vault.stat(a.path)?.size ?? 0;
+						this.recordProblem(a.path, 'too-large', `Simplenote refused it as too large (${Math.round(size / 1024)} KB)`);
 						continue;
 					}
 					const msg = `${a.kind} ${a.path}: ${errorText(e)}`;
 					this.log.error(msg);
 					result.errors.push(msg);
+					if (a.kind !== 'trash-local' && a.kind !== 'adopt') this.recordProblem(a.path, 'error', `sync keeps failing (${errorText(e)})`);
 					if (a.kind === 'create-local' || a.kind === 'update-local' || a.kind === 'trash-local' || a.kind === 'adopt') pullFailed = true;
 				}
 				if (!this.dryRun && ++n % 10 === 0) this.store.save(this.state);
+			}
+			if (trashedLocally.length > 0) {
+				const shown = trashedLocally.slice(0, 3).join(', ');
+				this.deps.notice(`Simplenote: ${trashedLocally.length} file(s) moved to the Obsidian trash because their notes were trashed on Simplenote: ${shown}${trashedLocally.length > 3 ? ', …' : ''}`);
 			}
 			if (!this.dryRun) {
 				if (!pullFailed) this.state.cursor = fetched.current;
@@ -309,7 +362,7 @@ export class SyncEngine {
 			}
 			result.ok = result.errors.length === 0;
 			this.log.info(`sync done: pulled ${result.pulled}, pushed ${result.pushed}, trashed ${result.trashed}${result.errors.length ? `, ${result.errors.length} error(s)` : ''}`);
-			if (result.ok) this.setStatus({ kind: 'idle', at: now });
+			if (result.ok) this.setStatus({ kind: 'idle', at: now, problems: Object.keys(this.state.problems).length });
 			else this.setStatus({ kind: 'error', message: result.errors[0] ?? 'error' });
 			return result;
 		} catch (e) {
@@ -337,6 +390,12 @@ export class SyncEngine {
 		const pathKeys = new Set<string>();
 		const idFiles = new Map<string, LocalFile[]>();
 		const paused = new Set(this.state.pausedPaths.map(nameKey));
+		const presentIds = new Set<string>();
+		const noteId = async (path: string): Promise<void> => {
+			const fm = await this.vault.readFrontmatter(path);
+			const id = fm?.['simplenote-id'];
+			if (typeof id === 'string' && id.length > 0) presentIds.add(id);
+		};
 		// Simplenote tags are case-insensitive: two folders that differ only by case map to one tag.
 		const canonicalFolder = new Map<string, string>();
 		for (const f of [...this.vault.listFolders()].sort()) if (!canonicalFolder.has(nameKey(f))) canonicalFolder.set(nameKey(f), f);
@@ -354,8 +413,15 @@ export class SyncEngine {
 				}
 			}
 			const lf: LocalFile = { info, id: null, changed: true, excluded: reason };
+			if (reason === 'too-large') {
+				const over = `larger than the maximum note size setting (${Math.round(info.size / 1024)} KB)`;
+				if (!this.state.problems[info.path] || this.state.problems[info.path]?.size !== info.size) this.recordProblem(info.path, 'too-large', over);
+				await noteId(info.path);
+				continue;
+			}
 			if (reason) {
 				excluded.push(lf);
+				await noteId(info.path);
 				if (this.state.knownExcluded[info.path] !== reason) {
 					this.state.knownExcluded[info.path] = reason;
 					this.log.warn(`excluded: ${info.path} (${describeExclusion(reason)})`);
@@ -363,7 +429,14 @@ export class SyncEngine {
 				continue;
 			}
 			delete this.state.knownExcluded[info.path];
-			if (paused.has(nameKey(info.path))) continue;
+			if (paused.has(nameKey(info.path))) {
+				await noteId(info.path);
+				continue;
+			}
+			if (this.stillBlocked(info.path, info)) {
+				await noteId(info.path);
+				continue;
+			}
 			const st = byPath.get(nameKey(info.path));
 			if (st && st.mtime === info.mtime && st.size === info.size && !st.recheck) {
 				lf.id = st.id;
@@ -401,9 +474,10 @@ export class SyncEngine {
 		// drop paused entries whose file is gone
 		this.state.pausedPaths = this.state.pausedPaths.filter((p) => pathKeys.has(nameKey(p)));
 		for (const p of Object.keys(this.state.knownExcluded)) if (!pathKeys.has(nameKey(p))) delete this.state.knownExcluded[p];
+		for (const p of Object.keys(this.state.problems)) if (!pathKeys.has(nameKey(p))) delete this.state.problems[p];
 		if (excluded.length > 0) this.log.info(`${excluded.length} file(s) excluded from sync (command "List excluded files" shows them)`);
 		const noId = files.filter((f) => f.id === null);
-		return { files: files.filter((f) => f.id === null || byId.get(f.id) === f), byId, noId, excluded, pathKeys, folders: this.vault.listFolders() };
+		return { files: files.filter((f) => f.id === null || byId.get(f.id) === f), byId, presentIds, noId, excluded, pathKeys, folders: this.vault.listFolders() };
 	}
 
 	private pickKeeper(id: string, list: LocalFile[]): LocalFile {
@@ -573,14 +647,31 @@ export class SyncEngine {
 				version = got.version;
 			}
 			if (data.deleted) {
-				if (lf) actions.push(this.trashLocalAction(lf, id, 'trashed on Simplenote'));
-				else {
+				handled.add(id);
+				if (!lf) {
 					delete this.state.notes[id];
 					delete this.state.pendingDeletes[id];
+					delete this.state.trashedByMe[id];
+					continue;
 				}
-				handled.add(id);
+				if (!(await this.loadLocal(lf))) continue;
+				const note = lf.note as LocalNote;
+				const localHash = await this.hashLocal(lf, note);
+				if (this.state.trashedByMe[id]) {
+					// this device trashed the note because the file had vanished; the file is back: restore the note
+					this.log.warn(`${lf.info.path} is back after it had vanished; restoring its note on Simplenote`);
+					actions.push(this.restoreAction(lf, note, id, version, data));
+					continue;
+				}
+				if (st && localHash !== st.contentHash) {
+					this.log.warn(`${lf.info.path} was trashed on Simplenote but edited here since; keeping the file and restoring the note`);
+					actions.push(this.restoreAction(lf, note, id, version, data));
+					continue;
+				}
+				actions.push(this.trashLocalAction(lf, id, 'trashed on Simplenote'));
 				continue;
 			}
+			delete this.state.trashedByMe[id];
 			if (!lf) {
 				if (st && version === st.version) continue; // local file gone, remote unchanged: deletion flow decides
 				if (st) {
@@ -681,7 +772,7 @@ export class SyncEngine {
 				delete this.state.pendingDeletes[st.id];
 				continue;
 			}
-			if (scan.excluded.some((f) => nameKey(f.info.path) === nameKey(st.path))) continue; // now excluded: leave the note alone
+			if (scan.presentIds.has(st.id)) continue; // file exists but is excluded, paused, or blocked: leave the note alone
 			const pd = this.state.pendingDeletes[st.id];
 			if (!pd) {
 				this.state.pendingDeletes[st.id] = { path: st.path, since: now };
@@ -858,6 +949,20 @@ export class SyncEngine {
 		};
 	}
 
+	private restoreAction(lf: LocalFile, note: LocalNote, id: string, version: number, remote: NoteData): Action {
+		return {
+			kind: 'push',
+			category: 'change',
+			path: lf.info.path,
+			id,
+			describe: `restore note on Simplenote from ${lf.info.path}`,
+			run: async () => {
+				await this.pushLocal(lf, note, id, version, remote, undefined);
+				delete this.state.trashedByMe[id];
+			},
+		};
+	}
+
 	private trashRemoteAction(st: NoteState): Action {
 		return {
 			kind: 'trash-remote',
@@ -878,6 +983,7 @@ export class SyncEngine {
 				this.log.info(`trashed note on Simplenote: ${st.path}`);
 				delete this.state.notes[st.id];
 				delete this.state.pendingDeletes[st.id];
+				this.state.trashedByMe[st.id] = st.path;
 			},
 		};
 	}
@@ -1164,6 +1270,11 @@ export function summarize(actions: Action[]): PlanSummary {
 		s.causes.push(`Folder "${from || '/'}" -> "${to || '/'}": ${n} note(s) will be moved or retagged`);
 	}
 	return s;
+}
+
+export function remedyFor(p: SyncProblem): string {
+	if (p.kind === 'too-large') return 'Shorten the note or split it into several notes; it syncs again as soon as it is small enough. (Or move it to an excluded folder to keep it local only.)';
+	return 'Open the sync log for details. It is retried as soon as the file changes or after the next full reconcile.';
 }
 
 export function overThreshold(s: PlanSummary): boolean {
