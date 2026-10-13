@@ -84,6 +84,13 @@ Dry-run mode shows the same dialog and changes nothing.
   text equals the kept file or the note on Simplenote, and trashes a duplicate note on Simplenote when a
   copy carries a second id. Copies whose text differs are left alone and listed in the sync log.
 - Device-local state (cursor, versions) is kept in local storage, so every device syncs independently.
+- **Shared vault (iCloud, Obsidian Sync) with the plugin on several devices:** turn on the setting
+  "Shared vault: one device pushes at a time". One device holds a *push lease*; the others only pull, and
+  their edits reach Simplenote through the holder (via the vault sync). Without the lease, every edit is
+  pushed once per device, and the intermediate snapshots the vault sync delivers get merged into the note
+  as duplicated fragments. The lease is a small note kept in the Simplenote trash. It moves by itself when
+  the holder stops syncing for 3 minutes (app closed, phone in the background); the command "Take over sync
+  on this device" moves it at once. The status bar shows `pull only (Windows abcd pushes)` on the other devices.
 - Uploads are throttled to 2 requests per second and resume after Obsidian restarts.
 
 ### Exclusions
@@ -94,7 +101,7 @@ size limit, and folders in the excluded list. A synced file that becomes exclude
 ## Commands
 
 Sync now · Pause / resume sync · Full reconcile · Open sync log · List excluded and failing files ·
-Clean up duplicate copies of notes · Log out.
+Clean up duplicate copies of notes · Take over sync on this device (shared vault) · Log out.
 The status bar shows `Simplenote: synced 2m ago`, `syncing…`, `paused`, or `error`.
 
 ## Optional: link translation
@@ -123,7 +130,8 @@ excluded folder.
 - Obsidian's community-plugin review may reject a plugin that embeds another app's key, so this
   plugin is distributed through BRAT.
 - Vault-sync services (iCloud, especially iCloud for Windows) can produce conflict copies and
-  temporary placeholders. The rules above limit the damage, but keep backups.
+  temporary placeholders. The rules above limit the damage, but keep backups. With the plugin running on
+  several devices of one shared vault, turn on "Shared vault: one device pushes at a time".
 
 ## Development
 

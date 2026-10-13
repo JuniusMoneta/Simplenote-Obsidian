@@ -8,12 +8,14 @@ import { normalizeState, type StateStore, type SyncState } from './state';
 import { SyncEngine, type SyncStatus } from './sync';
 import { confirmPlan, ExcludedModal, firstRunDialog, LogModal } from './ui';
 import { LinkTranslatorImpl } from './links';
+import { LEASE_TTL_MS, PushLease } from './lease';
 
 /** Secret storage is shared by all vaults on a device: the token id carries the vault id so that two vaults can use two accounts. */
 const TOKEN_SECRET_PREFIX = 'simplenote-sync-token';
 const LEGACY_TOKEN_SECRET_ID = 'simplenote-sync-token';
 const LS_DEVICE_SYNC = 'simplenote-sync:device-sync-enabled';
 const LS_STATE = 'simplenote-sync:state';
+const LS_DEVICE_ID = 'simplenote-sync:device-id';
 const LS_LOG = 'simplenote-sync:log';
 const FILE_EVENT_DEBOUNCE_MS = 3000;
 
@@ -60,6 +62,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		this.client = this.newClient();
 		this.vaultAdapter = new ObsidianVault(this.app, this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`);
 		const translator = new LinkTranslatorImpl(this.app, () => this.engine.knownNotes(), (path) => this.isExcluded(path));
+		const lease = new PushLease({ client: this.client, deviceId: this.deviceId(), deviceName: this.deviceName(), now: () => Date.now(), log: (m) => this.log.info(m) });
 		this.engine = new SyncEngine({
 			vault: this.vaultAdapter,
 			client: this.client,
@@ -71,6 +74,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 				dryRun: this.settings.dryRun,
 				translateLinks: this.settings.translateLinks,
 				tagStyle: this.settings.tagStyle,
+				sharedVault: this.settings.sharedVault,
 			}),
 			confirmPlan: (summary) => confirmPlan(this.app, summary),
 			firstRun: (proposal, excluded) => firstRunDialog(this.app, proposal, excluded),
@@ -79,6 +83,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 			},
 			onStatus: (s) => this.renderStatus(s),
 			translator,
+			lease,
 		});
 
 		this.addSettingTab(new SimplenoteSettingTab(this.app, this));
@@ -117,6 +122,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		this.addCommand({ id: 'log-out', name: 'Log out', callback: () => void this.logout() });
 		this.addCommand({ id: 'list-excluded', name: 'List excluded and failing files', callback: () => this.openProblems() });
 		this.addCommand({ id: 'cleanup-duplicates', name: 'Clean up duplicate copies of notes', callback: () => void this.cleanupDuplicates() });
+		this.addCommand({ id: 'take-over-sync', name: 'Take over sync on this device (shared vault)', callback: () => void this.takeOverSync() });
 
 		// file events (debounced per file, ignoring the plugin's own writes)
 		const kick = debounce(() => void this.syncNow('file changes'), FILE_EVENT_DEBOUNCE_MS, true);
@@ -261,6 +267,40 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		await Promise.resolve();
 	}
 
+	// ----- device identity and push lease -----
+
+	/** Random id of this device, kept in local storage (never in the vault). */
+	deviceId(): string {
+		const stored = this.app.loadLocalStorage(LS_DEVICE_ID) as string | null;
+		if (typeof stored === 'string' && /^[a-z0-9]{8,}$/.test(stored)) return stored;
+		const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+		this.app.saveLocalStorage(LS_DEVICE_ID, id);
+		return id;
+	}
+
+	deviceName(): string {
+		const kind = Platform.isIosApp ? 'iPhone/iPad' : Platform.isAndroidApp ? 'Android' : Platform.isMacOS ? 'Mac' : Platform.isWin ? 'Windows' : Platform.isLinux ? 'Linux' : 'Device';
+		return `${kind} ${this.deviceId().slice(0, 4)}`;
+	}
+
+	/** One line for the settings page: who holds the push lease. */
+	leaseInfo(): string {
+		if (!this.settings.sharedVault) return 'off';
+		const d = this.engine.pullOnly;
+		if (d) return `${d} pushes, this device pulls only`;
+		return this.engine.lastSyncAt() > 0 ? 'this device pushes' : 'decided on the next sync';
+	}
+
+	async takeOverSync(): Promise<void> {
+		if (!this.settings.sharedVault) {
+			new Notice('Simplenote: turn on "Shared vault" in the settings first.');
+			return;
+		}
+		this.engine.takeOver();
+		new Notice(`Simplenote: taking the push lease over for ${this.deviceName()}. Other devices notice within ${Math.round(LEASE_TTL_MS / 60_000)} minutes.`);
+		await this.syncNow('take over');
+	}
+
 	// ----- device-local toggle -----
 
 	deviceSyncEnabled(): boolean {
@@ -368,6 +408,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 				break;
 			default:
 				text = s.at > 0 ? `Simplenote: synced ${ago(Date.now() - s.at)}` : 'Simplenote: not synced yet';
+				if (s.pullOnly) text += ` · pull only (${s.pullOnly} pushes)`;
 				if (s.problems > 0) {
 					text += ` · ${s.problems} not syncing`;
 					this.statusEl.addClass('simplenote-sync-status-error');

@@ -168,3 +168,33 @@ Secret storage is device-wide, not per vault (Obsidian 1.11.4+). The token id no
 (`simplenote-sync-token-<appId>`); the old id is migrated by the first vault that loads and then cleared,
 so a second vault asks for its own login instead of silently syncing the first vault's account.
 
+## Push lease for shared vaults (0.4.3)
+
+Observed: a vault shared through iCloud between Windows and iOS, plugin running on both. Every edit was
+pushed twice, once per device, and because iCloud delivers intermediate snapshots while the owner is still
+typing, the second device pushed old snapshots against old bases. The server merge applied them as patches:
+sentences repeated with fragments ("He disappearg white robes. He disappearg white robes."). No pre-push
+re-read can prevent this; two bridges for one vault is the problem.
+
+Decision: with the `sharedVault` setting on, only one device pushes. Coordination goes through the one
+channel every device reaches within seconds, the Simplenote account itself (`src/lease.ts`):
+
+- One note with a fixed id (`LEASE_NOTE_ID`), kept in the Simplenote trash (`deleted: true`), never mapped
+  to a file, filtered out of the index before planning.
+- Each device owns one line: `deviceId priority until name`. Holder = valid line (until > now) with the
+  lowest priority, ties by device id. A device only rewrites its own line, so a stale-base POST that the
+  real server merges (NOTES above: it merges instead of refusing) still leaves both lines intact and every
+  device derives the same holder. No compare-and-swap needed.
+- Claim when free (priority = now), renew when less than half the TTL (3 min) is left, take over when the
+  owner asks (priority below the current holder's, so an in-flight renewal cannot win).
+- Writes by other devices arrive through the since-cursor index (trashed notes are included with data), so
+  a non-holder costs no extra request; the holder costs one POST per 90 s while active.
+- Pull-only devices drop push / merge / create-remote / trash-remote actions. All of them are re-detected
+  from the local scan on every sync, so nothing is lost when the lease arrives.
+- Two devices claiming an empty lease at the same instant both believe they hold it for one sync; the
+  next index fetch shows one line winning and the other device goes pull-only.
+
+Rejected: a lock file in the vault (iCloud lag of minutes), a separate helper plugin (devices have no
+channel but iCloud and Simplenote), making the lease the default (with independent vaults a pull-only
+device could never push its own edits; the setting must be opt-in).
+
