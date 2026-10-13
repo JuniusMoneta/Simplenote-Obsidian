@@ -408,7 +408,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 				break;
 			default:
 				text = s.at > 0 ? `Simplenote: synced ${ago(Date.now() - s.at)}` : 'Simplenote: not synced yet';
-				if (s.pullOnly) text += ` · pull only (${s.pullOnly} pushes)`;
+				if (s.pullOnly) text += ` · standby (${s.pullOnly} syncs)`;
 				if (s.problems > 0) {
 					text += ` · ${s.problems} not syncing`;
 					this.statusEl.addClass('simplenote-sync-status-error');

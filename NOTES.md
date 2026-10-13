@@ -46,27 +46,27 @@ The script prints a "Findings for NOTES.md" block. Paste it into the sections be
 
 `obsidian:` + folder path, with:
 
-- `%` → `%25`, `,` → `%2C` (commas break the web tag input), `_` → `%5F` (since 0.4.4)
+- `%` → `%25`, `,` → `%2C` (commas break the web tag input)
 - space → `_`
-- everything else (including `/`, `:`, `-`, `&`, accented letters, emoji) unchanged.
+- everything else (including `/`, `:`, `-`, `&`, `_`, accented letters, emoji) unchanged.
 
-Decoding reverses the rules. Before 0.4.4 a real `_` was not escaped, so `my_folder` and `my folder` both
-became `obsidian:my_folder`. Decoding therefore first looks for an existing vault folder whose encoded
-path equals the tag, then for one whose pre-0.4.4 encoding equals it (both compared case-insensitively and
-NFC-normalized); otherwise it decodes (`_` = space). A note that still carries the pre-0.4.4 tag of a
-folder with a real `_` is pushed once with the new tag (one grouped change for the mass-change guard).
-Change hashes count a folder tag's `%5F` as `_`, so the new tag alone never looks like an edit.
-**All devices need 0.4.4 or later:** an older version decodes `obsidian:my%5Ffolder` as a folder named
-`my%5Ffolder`.
+**This format is frozen.** A real `_` is not escaped, so `my_folder` and `my folder` share
+`obsidian:my_folder`; decoding first looks for an existing vault folder whose encoded path equals the tag,
+then for one whose name equals the decoded tag (both case-insensitive, NFC-normalized), otherwise it
+decodes with `_` = space. The small ambiguity is the price of never changing the wire format again: see
+"0.4.4 incident" below for what happened when 0.4.4 changed it.
+
+Decoding also understands the two forms 0.4.4 wrote: `%5F` and `%255F` (0.4.4 re-encoding a folder that
+an older device had literally named `my%5Ffolder`) both mean `_`. Change hashes (`tagKey`) count them as
+`_`, and a note that still carries such a tag is pushed once with the plain tag (one grouped change for
+the mass-change guard, `folderTagUpdate`).
 
 Two vault folders that differ only in case map to the same tag. The one that holds notes wins (an empty
 leftover from a rename does no harm); if both hold notes, the first in sort order wins, the notes of the
 other are skipped, and a notice (once per session) asks the owner to rename or merge one of them.
-A case-only folder rename (`reading` → `Reading`) on a device replaces the folder tag on every note in
-that folder and its subfolders (`obsidian:reading` → `obsidian:Reading`); Simplenote stores tag case. The
-push is triggered by the file's folder case changing since its last sync on that device, so another
-device that still has the old spelling does not push it back. It keeps its folder name until vault sync
-renames it, and pulled notes still go into it. The pushes count as one change for the mass-change guard.
+**Folder case is never a reason to push.** Pulled notes go into the existing folder whatever its case, and
+a local push writes the folder tag as the folder is spelled on that device. 0.4.3 and 0.4.4 pushed a tag
+rewrite on a case-only rename; see the incident below.
 
 ### Change hash and ccid
 
@@ -168,6 +168,42 @@ Secret storage is device-wide, not per vault (Obsidian 1.11.4+). The token id no
 (`simplenote-sync-token-<appId>`); the old id is migrated by the first vault that loads and then cleared,
 so a second vault asks for its own login instead of silently syncing the first vault's account.
 
+## 0.4.4 incident (2026-10-12) and the 0.4.5 rules
+
+A vault shared through iCloud between Windows and an iPhone, both running the plugin with the shared-vault
+setting on. Windows updated to 0.4.4 through BRAT at 22:45 while the phone still ran the previous version.
+Within fifteen minutes:
+
+1. **Tag format change.** Windows pushed `obsidian:Projects/therapy%5Fproject` (the new `_` escape) for 19
+   notes. The phone, on the old version, decoded that literally and moved the 19 files into a new folder
+   `Projects/therapy%5Fproject`; iCloud carried the move to Windows, which re-encoded the folder as
+   `obsidian:Projects/therapy%255Fproject`. Rule: the wire format never changes again; both 0.4.4 forms decode
+   to `_`; the plugin never creates a folder for a tag when an existing folder's name equals the decoded tag.
+2. **Case rewrites.** The phone's vault had the folder as `writing`, Windows as `Writing` (iCloud does not
+   reliably propagate a case-only rename). Each device saw "the folder case changed since my last sync" and
+   pushed `obsidian:writing` / `obsidian:Writing` for all 74 notes, in turn. Rule: folder case is never a
+   reason to push (`folderTagUpdate` only rewrites the 0.4.4 `%5F` forms).
+3. **Both devices writing the same files.** The "pull-only" device of 0.4.3 still wrote every pulled note.
+   Two devices writing the same file within seconds made iCloud for Windows produce conflict copies named
+   `Note(1).md`, `Note(1)(1).md`, whole folders `A New Dream(1)`, `Rosmini Essay(2)`, and even `(1).obsidian`.
+   Rule: a standby device applies nothing but `adopt` (state only). The holder does all reading and writing;
+   the vault sync carries its writes. A device that takes the lease over does a full reconcile on its next sync
+   and resets the vanished-file timers, and trashes nothing on the takeover sync.
+4. **Conflict names became titles.** When iCloud renamed `Syncretic System.md` to `Syncretic System(1).md`, the
+   plugin treated it as a user rename and pushed the title `Syncretic System(1)`; the other device renamed its
+   file to match, iCloud produced `(1)(1)`, and so on four times. Rule: `stripConflictSuffix` removes trailing
+   `(n)` groups written directly after the name before a file name is read as a title or compared with one;
+   `pickKeeper` treats such names as conflict copies. (The plugin's own collision suffix is ` (n)` with a space
+   and is unaffected; "Journal Red (1)" stays a title.)
+5. **Vanished files trashed on Simplenote.** While iCloud renamed folders, nine files were missing for more
+   than 60 seconds; the holder trashed their notes, and the other device then moved the files to the trash.
+   Rule: on a shared vault the wait is 10 minutes (`SHARED_VAULT_VANISH_WAIT_MS`).
+
+Repair was done by hand on the Windows copy of the vault (duplicates compared body by body, the newest
+body kept, the stored `simplenote-title` kept, copies moved to `.trash/repair-20261012`), the nine notes
+restored from the Simplenote trash, the 19 tags rewritten, and the ten mangled titles reverted to the
+version before the `(1)` push through the Simplenote version history.
+
 ## Push lease for shared vaults (0.4.3)
 
 Observed: a vault shared through iCloud between Windows and iOS, plugin running on both. Every edit was
@@ -189,8 +225,10 @@ channel every device reaches within seconds, the Simplenote account itself (`src
   owner asks (priority below the current holder's, so an in-flight renewal cannot win).
 - Writes by other devices arrive through the since-cursor index (trashed notes are included with data), so
   a non-holder costs no extra request; the holder costs one POST per 90 s while active.
-- Pull-only devices drop push / merge / create-remote / trash-remote actions. All of them are re-detected
-  from the local scan on every sync, so nothing is lost when the lease arrives.
+- Pull-only devices (0.4.3) dropped push / merge / create-remote / trash-remote actions but still wrote
+  pulled notes. Since 0.4.5 a standby device drops everything but `adopt`: see the 0.4.4 incident above.
+  Local changes are re-detected from the local scan on every sync, so nothing is lost when the lease arrives;
+  remote changes are caught up by the full reconcile the new holder runs on its next sync.
 - Two devices claiming an empty lease at the same instant both believe they hold it for one sync; the
   next index fetch shows one line winning and the other device goes pull-only.
 

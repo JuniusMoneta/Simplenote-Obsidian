@@ -16,7 +16,6 @@ import {
 	folderOfPath,
 	isFolderTag,
 	joinPath,
-	legacyFolderTag,
 	nameKey,
 	noteToFileText,
 	splitContent,
@@ -37,6 +36,8 @@ import type { BookmarkAdapter, FileInfo, VaultAdapter } from './vault';
 
 export const NEW_FILE_WAIT_MS = 2 * 60 * 1000;
 export const SUSPICIOUS_WAIT_MS = 60 * 1000;
+/** On a shared vault the vault sync can hide a file for minutes while it moves folders around; wait longer before trashing its note. */
+export const SHARED_VAULT_VANISH_WAIT_MS = 10 * 60 * 1000;
 export const FULL_RECONCILE_MS = 24 * 60 * 60 * 1000;
 export const GUARD_LIMITS = { trash: 10, move: 20, change: 50 };
 
@@ -183,6 +184,9 @@ export class SyncEngine {
 	private queued: Promise<SyncResult> | null = null;
 	private state!: SyncState;
 	private dryRun = false;
+	private sharedVault = false;
+	/** Set when this device just took the sync lease over: the next sync fetches the full index to catch up. */
+	private fullNext = false;
 	/** Paths of files the current plan will create, so link translation can resolve them during the batch. */
 	private planned = new Map<string, string>();
 	/** Folder pairs differing only by case that were already shown in a notice this session. */
@@ -308,12 +312,14 @@ export class SyncEngine {
 		this.setStatus({ kind: 'syncing' });
 		const settings = this.settingsFn();
 		this.dryRun = settings.dryRun;
+		this.sharedVault = settings.sharedVault === true;
 		result.dryRun = this.dryRun;
 		this.state = this.store.load();
 		const now = this.now();
 		this.log.info(`sync start${opts.reason ? ` (${opts.reason})` : ''}${this.dryRun ? ' [dry-run]' : ''}`);
 		try {
-			let full = opts.full === true || this.state.cursor.length === 0 || now - this.state.lastFullReconcile > FULL_RECONCILE_MS;
+			let full = opts.full === true || this.fullNext || this.state.cursor.length === 0 || now - this.state.lastFullReconcile > FULL_RECONCILE_MS;
+			this.fullNext = false;
 			let fetched: { entries: IndexEntry[]; current: string };
 			try {
 				fetched = await this.client.fetchIndex(full ? undefined : this.state.cursor);
@@ -353,11 +359,20 @@ export class SyncEngine {
 				const wasPullOnly = this.pullOnly;
 				this.pullOnly = d.holder ? null : (d.holderName ?? 'another device');
 				if (!d.holder) {
-					const held = actions.filter((a) => isRemoteWrite(a.kind));
-					actions = actions.filter((a) => !isRemoteWrite(a.kind));
-					if (wasPullOnly !== this.pullOnly) this.log.info(`pull only: ${this.pullOnly} holds the push lease; local changes reach Simplenote through that device`);
-					if (held.length > 0) this.log.debug(`${held.length} local change(s) wait for the push lease`);
-				} else if (wasPullOnly !== null) this.log.info('this device holds the push lease again');
+					// Standby: the holder syncs this vault in both directions and the vault sync carries its writes
+					// here. Only state-keeping actions run; writing pulled notes on two devices at once made
+					// iCloud for Windows rename files to `Note(1).md` and folders to `Folder(1)`.
+					const held = actions.filter((a) => a.kind !== 'adopt');
+					actions = actions.filter((a) => a.kind === 'adopt');
+					if (wasPullOnly !== this.pullOnly) this.log.info(`standby: ${this.pullOnly} holds the sync lease and syncs this vault; this device changes nothing until the lease moves`);
+					if (held.length > 0) this.log.debug(`${held.length} change(s) wait for the sync lease`);
+				} else if (wasPullOnly !== null) {
+					this.log.info('this device holds the sync lease now; full reconcile on the next sync');
+					this.fullNext = true;
+					// files that vanished while on standby are re-checked from now, and nothing is trashed on the takeover sync
+					actions = actions.filter((a) => a.kind !== 'trash-remote');
+					for (const pd of Object.values(this.state.pendingDeletes)) pd.since = now;
+				}
 			} else this.pullOnly = null;
 			const summary = summarize(actions);
 			if (actions.length > 0) this.log.info(`plan: ${summary.change} change(s), ${summary.move} move(s), ${summary.trash} trash(es)`);
@@ -600,7 +615,8 @@ export class SyncEngine {
 			const match = list.find((f) => nameKey(f.info.path) === nameKey(st.path));
 			if (match) return match;
 		}
-		const conflictRe = /\((conflict|conflicted copy|sync conflict)[^)]*\)|\b\d{4}-\d{2}-\d{2}\b| \d+\.md$/i;
+		// "Note (conflicted copy).md", "Note 2.md" (iCloud on macOS), "Note(1).md" (iCloud for Windows)
+		const conflictRe = /\((conflict|conflicted copy|sync conflict)[^)]*\)|\b\d{4}-\d{2}-\d{2}\b| \d+\.md$|\S\(\d+\)(\(\d+\))*\.md$/i;
 		const clean = list.filter((f) => !conflictRe.test(f.info.path));
 		const pool = clean.length > 0 ? clean : list;
 		return [...pool].sort((a, b) => a.info.path.length - b.info.path.length || (a.info.path < b.info.path ? -1 : 1))[0] as LocalFile;
@@ -946,12 +962,13 @@ export class SyncEngine {
 			}
 			if (scan.presentIds.has(st.id)) continue; // file exists but is excluded, paused, or blocked: leave the note alone
 			const pd = this.state.pendingDeletes[st.id];
+			const vanishWait = this.sharedVault ? SHARED_VAULT_VANISH_WAIT_MS : SUSPICIOUS_WAIT_MS;
 			if (!pd) {
 				this.state.pendingDeletes[st.id] = { path: st.path, since: now };
-				this.log.warn(`${st.path} vanished; waiting ${SUSPICIOUS_WAIT_MS / 1000} s before trashing the note`);
+				this.log.warn(`${st.path} vanished; waiting ${vanishWait / 1000} s before trashing the note`);
 				continue;
 			}
-			if (now - pd.since < SUSPICIOUS_WAIT_MS) continue;
+			if (now - pd.since < vanishWait) continue;
 			if (this.vault.exists(st.path)) {
 				delete this.state.pendingDeletes[st.id];
 				continue;
@@ -1133,22 +1150,18 @@ export class SyncEngine {
 	}
 
 	/**
-	 * Simplenote keeps the folder tag as written, but change hashes compare tags loosely (case, and
-	 * `%5F` = `_`). Returns a plan group when the note must be pushed only to rewrite its folder tag:
-	 * - the folder changed only in case on this device since the last sync (`reading` -> `Reading`);
-	 * - the note still has the pre-0.4.4 tag of a folder with a real `_` (`obsidian:my_folder`).
-	 * Another device that still has an old folder spelling does not push it back: its folder did not
-	 * change, and the tag it sees is not the pre-0.4.4 form of its folder.
+	 * Returns a plan group when the note must be pushed only to rewrite its folder tag: it still carries
+	 * a 0.4.4-style tag for its folder (`obsidian:my%5Ffolder`, `obsidian:my%255Ffolder`). Change hashes
+	 * count those as `_`, so nothing else would push it. The case of a folder is never a reason to push:
+	 * Simplenote compares tags case-insensitively, and two devices on a shared vault can disagree about
+	 * a folder's case for a long time (0.4.3 and 0.4.4 pushed the case back and forth between them).
 	 */
 	private folderTagUpdate(st: NoteState, lf: LocalFile): string | null {
-		const before = folderOfPath(st.path);
-		const after = folderOfPath(lf.info.path);
-		const tag = encodeFolderTag(after);
-		if (!tag || st.tags.includes(tag)) return null;
-		if (before !== after && nameKey(before) === nameKey(after)) return `Folder "${before}" renamed to "${after}" (folder tag case)`;
-		const legacy = legacyFolderTag(after);
-		if (legacy !== tag && legacy && st.tags.includes(legacy)) return `Folder "${after}": folder tag ${legacy} -> ${tag}`;
-		return null;
+		const folder = folderOfPath(lf.info.path);
+		const tag = encodeFolderTag(folder);
+		if (!tag || st.tags.some((t) => nameKey(t) === nameKey(tag))) return null;
+		const stale = st.tags.find((t) => isFolderTag(t) && tagKey(t) === tagKey(tag));
+		return stale ? `Folder "${folder}": folder tag ${stale} -> ${tag}` : null;
 	}
 
 	// ---------------- actions ----------------
@@ -1394,8 +1407,8 @@ export class SyncEngine {
 		// identical edit that another device pushed meanwhile is adopted instead of applied twice.
 		const current = await this.client.getNote(id);
 		if (current && current.version !== baseVersion) {
-			// folder tags must match exactly: a folder tag rewrite (case, `_`) changes nothing else
-			const sameFolderTags = tags.filter(isFolderTag).every((t) => current.data.tags.includes(t));
+			// a 0.4.4-style folder tag must still be rewritten although the hashes compare equal
+			const sameFolderTags = tags.filter(isFolderTag).every((t) => current.data.tags.some((ct) => nameKey(ct) === nameKey(t)));
 			if (sameFolderTags && (await this.hashRemote(current.data)) === hash) {
 				this.log.info(`${lf.info.path}: identical content already on Simplenote (v${current.version}); not pushing`);
 				this.state.notes[id] = {

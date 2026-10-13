@@ -8,11 +8,12 @@ import {
 	exclusionReason,
 	fileToNote,
 	folderFromTag,
-	legacyFolderTag,
 	tagKey,
 	noteToFileText,
 	splitTags,
 	stripCollisionSuffix,
+	stripConflictSuffix,
+	effectiveTitle,
 	titleToFileName,
 	uniqueBasename,
 } from '../src/mapping';
@@ -57,23 +58,27 @@ describe('folder tags', () => {
 		expect(encodeFolderTag('')).toBeNull();
 		expect(encodeFolderTag('/a/')).toBe('obsidian:a');
 		expect(decodeFolderTag('obsidian:Projects/Client_Work')).toBe('Projects/Client Work');
-		for (const f of ['A b/c-d', 'x&y', 'café', 'emoji 😀', 'with,comma', '50% off', 'a:b', 'my_folder', 'a_b c', '%5F', 'x,_y%', '_']) {
+		for (const f of ['A b/c-d', 'x&y', 'café', 'emoji 😀', 'with,comma', '50% off', 'a:b', 'x,y%']) {
 			expect(decodeFolderTag(encodeFolderTag(f) as string)).toBe(f);
 		}
+		// a real underscore is not escaped (fixed format): it decodes as a space unless the folder exists
+		expect(decodeFolderTag(encodeFolderTag('my_folder') as string)).toBe('my folder');
 	});
-	it('escapes a real underscore, so "a_b" and "a b" get different tags', () => {
-		expect(encodeFolderTag('my_folder')).toBe('obsidian:my%5Ffolder');
+	it('does not escape a real underscore: "a_b" and "a b" share one tag (the format is fixed for compatibility)', () => {
+		expect(encodeFolderTag('my_folder')).toBe('obsidian:my_folder');
 		expect(encodeFolderTag('my folder')).toBe('obsidian:my_folder');
-		expect(legacyFolderTag('my_folder')).toBe('obsidian:my_folder');
+		expect(folderFromTag('obsidian:my_folder', ['my_folder'])).toBe('my_folder');
+		expect(folderFromTag('obsidian:my_folder', ['my_folder', 'my folder'])).toBe('my_folder');
+		expect(folderFromTag('obsidian:my_folder', ['other'])).toBe('my folder');
+	});
+	it('reads the 0.4.4 forms %5F and %255F as an underscore and never creates a folder named my%5Ffolder', () => {
 		expect(decodeFolderTag('obsidian:my%5ffolder')).toBe('my_folder');
+		expect(decodeFolderTag('obsidian:Projects/therapy%255Fproject')).toBe('Projects/therapy_project');
 		expect(folderFromTag('obsidian:my%5Ffolder', ['other'])).toBe('my_folder');
 		expect(folderFromTag('obsidian:my%5Ffolder', ['my folder', 'My_Folder'])).toBe('My_Folder');
-	});
-	it('still understands pre-0.4.4 tags of folders with underscores', () => {
-		expect(folderFromTag('obsidian:my_folder', ['my_folder'])).toBe('my_folder');
-		// the exact current encoding wins over the old one
-		expect(folderFromTag('obsidian:my_folder', ['my_folder', 'my folder'])).toBe('my folder');
+		expect(folderFromTag('obsidian:Projects/therapy%255Fproject', ['Projects/therapy_project'])).toBe('Projects/therapy_project');
 		expect(tagKey('obsidian:My%5FFolder')).toBe(tagKey('obsidian:my_folder'));
+		expect(tagKey('obsidian:My%255FFolder')).toBe(tagKey('obsidian:my_folder'));
 		expect(tagKey('todo%5f')).toBe('todo%5f');
 	});
 	it('prefers an existing folder with underscores', () => {
@@ -248,5 +253,23 @@ describe('inline tag line (default tag style)', () => {
 		expect(appendTagLine('body', ['a'])).toBe('body\n\n#a');
 		expect(splitTagLine('body\n\n#a #b')).toEqual({ body: 'body', tags: ['a', 'b'] });
 		expect(splitTagLine('#a')).toEqual({ body: '', tags: ['a'] });
+	});
+});
+
+describe('iCloud for Windows conflict names', () => {
+	it('strips (1), (1)(1) written directly after the name, but not the plugin\'s own " (2)" or a user\'s "Journal Red (1)"', () => {
+		expect(stripConflictSuffix('Syncretic System(1)(1)(1)(1)')).toBe('Syncretic System');
+		expect(stripConflictSuffix('The True Ontology(1)')).toBe('The True Ontology');
+		expect(stripConflictSuffix('Untitled (5)(1)')).toBe('Untitled (5)');
+		expect(stripConflictSuffix('Journal Red (1)')).toBe('Journal Red (1)');
+		expect(stripConflictSuffix('Note (2)')).toBe('Note (2)');
+		expect(stripConflictSuffix('(1)')).toBe('(1)');
+	});
+	it('a conflict copy keeps the note title', () => {
+		expect(effectiveTitle('The True Ontology(1)', null).title).toBe('The True Ontology');
+		expect(effectiveTitle('Syncretic System(1)(1)', '# Syncretic System')).toEqual({ title: '# Syncretic System', usesTitleKey: true });
+		expect(effectiveTitle('Untitled (5)(1)', '')).toEqual({ title: '', usesTitleKey: true });
+		expect(basenameMatchesTitle('Note(1)', 'Note')).toBe(true);
+		expect(basenameMatchesTitle('Note(1)(1)', '# Note')).toBe(true);
 	});
 });

@@ -99,7 +99,7 @@ describe('push lease on a shared vault', () => {
 		// Windows comes back: the phone holds the lease now
 		await win.engine.sync();
 		expect(win.engine.pullOnly).toBe('iPhone ios0');
-		expect(logText(win)).toContain('pull only: iPhone ios0 holds the push lease');
+		expect(logText(win)).toContain('standby: iPhone ios0 holds the sync lease');
 	});
 
 	it('the holder renews only when half the lease time has passed', async () => {
@@ -124,7 +124,7 @@ describe('push lease on a shared vault', () => {
 		clock.now += 5_000;
 		await win.engine.sync();
 		expect(win.engine.pullOnly).toBe('iPhone ios0');
-		expect(logText(win)).toContain('pull only: iPhone ios0 holds the push lease');
+		expect(logText(win)).toContain('standby: iPhone ios0 holds the sync lease');
 	});
 
 	it('two devices claiming at the same moment agree on one holder', async () => {
@@ -160,6 +160,41 @@ describe('push lease on a shared vault', () => {
 		const r = await ios.engine.sync();
 		expect(r.pushed).toBe(1);
 		expect(server.get(LEASE_NOTE_ID)).toBeUndefined();
+	});
+
+	it('a standby device writes nothing: the holder applies remote changes and the vault sync carries them', async () => {
+		const { win, ios, server, vault, clock } = await sharedVault();
+		await win.engine.sync();
+		await ios.engine.sync();
+		server.seed('a', { content: 'Note\nline one\nedited on the web', tags: ['obsidian:F'] });
+		server.seed('n', { content: 'New on web\nbody', tags: ['obsidian:F'] });
+		clock.now += 15_000;
+		const r = await ios.engine.sync();
+		expect(r.pulled).toBe(0);
+		expect(vault.get('F/Note.md')).not.toContain('edited on the web');
+		expect(vault.has('F/New on web.md')).toBe(false);
+		await win.engine.sync();
+		expect(vault.get('F/Note.md')).toContain('edited on the web');
+		expect(vault.has('F/New on web.md')).toBe(true);
+		// the standby device sees the holder's writes through the vault and only records them
+		const r2 = await ios.engine.sync();
+		expect(r2.pushed + r2.pulled).toBe(0);
+		expect(vault.paths()).toEqual(['F/New on web.md', 'F/Note.md']);
+	});
+
+	it('a device that takes the lease over catches up with a full reconcile', async () => {
+		const { win, ios, server, vault, clock } = await sharedVault();
+		await win.engine.sync();
+		await ios.engine.sync();
+		server.seed('a', { content: 'Note\nline one\nedited while on standby', tags: ['obsidian:F'] });
+		clock.now += 15_000;
+		await ios.engine.sync(); // standby: nothing written
+		clock.now += LEASE_TTL_MS + 1; // Windows gone
+		await ios.engine.sync();
+		expect(ios.engine.pullOnly).toBeNull();
+		expect(logText(ios)).toContain('full reconcile on the next sync');
+		await ios.engine.sync();
+		expect(vault.get('F/Note.md')).toContain('edited while on standby');
 	});
 
 	it('a full reconcile on a pull-only device does not touch the lease note or trash anything', async () => {

@@ -5,7 +5,7 @@ Obsidian is the home of the notes. Simplenote is a web window onto the whole vau
 where Obsidian cannot be installed.
 
 - One `.md` file = one Simplenote note. The file name is the note title (first line on Simplenote).
-- Folders map to Simplenote tags that start with `obsidian:` (`Projects/Client Work/Plan.md` → `obsidian:Projects/Client_Work`; a real `_` is written `%5F`). Use version 0.4.4 or later on every device.
+- Folders map to Simplenote tags that start with `obsidian:` (`Projects/Client Work/Plan.md` → `obsidian:Projects/Client_Work`). A space and a real `_` share one tag; the folder that exists in the vault wins. Tags are compared without regard to case.
 - Other Simplenote tags become a hashtag line at the end of the note. A pinned note is a bookmark in Obsidian's core Bookmarks list, and bookmarking a note pins it on Simplenote.
 - Works on macOS, Windows, and iOS. The plugin runs on every device; whichever device has Obsidian open syncs.
 - Images and attachments are not uploaded. Notes that embed them sync as text.
@@ -75,6 +75,8 @@ Dry-run mode shows the same dialog and changes nothing.
   (iCloud for Windows briefly hides files).
 - A new file waits 2 minutes before a note is created, so that an id assigned by another device can arrive through the vault sync.
 - Conflict copies with a duplicated `simplenote-id` are paused and reported; they are never uploaded as new notes.
+  A conflict name that a vault sync gives a file (`Note(1).md`, `Note(1)(1).md` from iCloud for Windows, `Note 2.md`
+  from iCloud on a Mac) is never pushed as the note title.
 - A second file is never created for a note whose file exists. A note that changes on Simplenote while its
   file is unreadable (iCloud placeholder), blocked, paused, or excluded is applied once the file takes part
   in a sync again.
@@ -85,12 +87,17 @@ Dry-run mode shows the same dialog and changes nothing.
   copy carries a second id. Copies whose text differs are left alone and listed in the sync log.
 - Device-local state (cursor, versions) is kept in local storage, so every device syncs independently.
 - **Shared vault (iCloud, Obsidian Sync) with the plugin on several devices:** turn on the setting
-  "Shared vault: one device pushes at a time". One device holds a *push lease*; the others only pull, and
-  their edits reach Simplenote through the holder (via the vault sync). Without the lease, every edit is
-  pushed once per device, and the intermediate snapshots the vault sync delivers get merged into the note
-  as duplicated fragments. The lease is a small note kept in the Simplenote trash. It moves by itself when
-  the holder stops syncing for 3 minutes (app closed, phone in the background); the command "Take over sync
-  on this device" moves it at once. The status bar shows `pull only (Windows abcd pushes)` on the other devices.
+  "Shared vault: one device syncs at a time". One device holds a *sync lease* and syncs the vault in both
+  directions; the others stand by and change nothing (they only keep their records up to date), and the vault
+  sync carries the holder's writes to them. Their edits reach Simplenote through the holder, via the vault sync.
+  Without the lease, every edit is pushed once per device, and the intermediate snapshots the vault sync delivers
+  get merged into the note as duplicated fragments; two devices writing the same pulled note at the same time
+  also make iCloud for Windows rename files to `Note(1).md` and folders to `Folder(1)`. The lease is a small note
+  kept in the Simplenote trash. It moves by itself when the holder stops syncing for 3 minutes (app closed, phone
+  in the background); the command "Take over sync on this device" moves it at once. A device that takes the lease
+  over starts with a full reconcile. The status bar shows `standby (Windows abcd syncs)` on the other devices.
+  On a shared vault a file that vanishes is re-checked for 10 minutes (not 60 seconds) before its note is trashed,
+  because the vault sync can hide files for minutes while it renames folders.
 - Uploads are throttled to 2 requests per second and resume after Obsidian restarts.
 
 ### Exclusions
@@ -131,7 +138,7 @@ excluded folder.
   plugin is distributed through BRAT.
 - Vault-sync services (iCloud, especially iCloud for Windows) can produce conflict copies and
   temporary placeholders. The rules above limit the damage, but keep backups. With the plugin running on
-  several devices of one shared vault, turn on "Shared vault: one device pushes at a time".
+  several devices of one shared vault, turn on "Shared vault: one device syncs at a time".
 
 ## Development
 

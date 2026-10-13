@@ -533,7 +533,7 @@ describe('pinned property migration', () => {
 	});
 });
 
-describe('case-only folder rename', () => {
+describe('folder case and the folder tag', () => {
 	async function reading(): Promise<H> {
 		const h = await makeHarness();
 		seed(h, 'a', 'One\nbody', ['obsidian:reading', 'todo']);
@@ -543,61 +543,42 @@ describe('case-only folder rename', () => {
 		return h;
 	}
 
-	it('replaces the folder tag with the new spelling on every note, subfolders included', async () => {
+	it('a case-only folder rename pushes nothing: Simplenote compares tags case-insensitively', async () => {
 		const h = await reading();
-		const before = h.server.get('a')?.content;
 		await h.vault.renameFolder('reading', 'Reading');
 		const r = await h.engine.sync();
-		expect(r.pushed).toBe(2);
-		expect(h.server.get('a')?.tags).toEqual(['todo', 'obsidian:Reading']);
-		expect(h.server.get('b')?.tags).toEqual(['obsidian:Reading/later']);
-		expect(h.server.get('c')?.tags).toEqual(['obsidian:other']);
-		expect(h.server.get('a')?.content).toBe(before);
+		expect(r.pushed).toBe(0);
+		expect(h.server.get('a')?.tags).toEqual(['obsidian:reading', 'todo']);
 		expect(h.vault.paths()).toEqual(['Reading/One.md', 'Reading/later/Two.md', 'other/Three.md']);
 		const again = await h.engine.sync();
 		expect(again.pulled + again.pushed + again.trashed).toBe(0);
 	});
 
-	it('counts a renamed folder as one change for the mass-change guard', async () => {
-		const h = await makeHarness();
-		for (let i = 0; i < 60; i++) seed(h, `n${i}`, `Note ${i}\nbody`, ['obsidian:reading']);
-		await h.engine.sync();
-		await h.vault.renameFolder('reading', 'Reading');
-		const r = await h.engine.sync();
-		expect(h.confirmations).toHaveLength(0);
-		expect(r.pushed).toBe(60);
-		expect([...h.server.notes.values()].every((n) => n.data?.tags.includes('obsidian:Reading'))).toBe(true);
-	});
-
-	it('another device with the old spelling does not push it back', async () => {
+	it('two devices whose folders differ only in case never push the case back and forth', async () => {
 		const h = await reading();
 		const other = await makeHarness({ server: h.server });
 		await other.engine.sync();
-		expect(other.vault.has('reading/One.md')).toBe(true);
 		await h.vault.renameFolder('reading', 'Reading');
-		await h.engine.sync();
-		for (let i = 0; i < 2; i++) {
-			const r = await other.engine.sync();
-			expect(r.pushed).toBe(0);
+		for (let i = 0; i < 3; i++) {
+			const r1 = await h.engine.sync();
+			const r2 = await other.engine.sync();
+			expect(r1.pushed + r2.pushed).toBe(0);
 		}
-		expect(other.vault.paths()).toContain('reading/One.md');
-		expect(h.server.get('a')?.tags).toContain('obsidian:Reading');
-		const back = await h.engine.sync();
-		expect(back.pulled + back.pushed).toBe(0);
+		expect(h.server.version('a')).toBe(1);
+		expect(other.vault.has('reading/One.md')).toBe(true);
+		expect(h.vault.has('Reading/One.md')).toBe(true);
 	});
 
-	it('keeps the new spelling when the note also changed on Simplenote', async () => {
+	it('a remote change lands in the folder whatever its case', async () => {
 		const h = await reading();
 		await h.vault.renameFolder('reading', 'Reading');
 		h.server.seed('a', { content: 'One\nbody edited remotely', tags: ['obsidian:reading', 'todo'] });
 		await h.engine.sync();
-		expect(h.server.get('a')?.tags).toContain('obsidian:Reading');
-		expect(h.server.get('a')?.tags).not.toContain('obsidian:reading');
-		expect(h.server.get('a')?.content).toBe('One\nbody edited remotely');
 		expect(h.vault.get('Reading/One.md')).toContain('body edited remotely');
+		expect(h.vault.paths()).toEqual(['Reading/One.md', 'Reading/later/Two.md', 'other/Three.md']);
 	});
 
-	it('pushes the new spelling together with a local edit', async () => {
+	it('a local edit pushes the folder tag as the folder is spelled here', async () => {
 		const h = await reading();
 		await h.vault.renameFolder('reading', 'Reading');
 		h.vault.put('Reading/One.md', h.vault.get('Reading/One.md') + '\nmore');
@@ -607,22 +588,29 @@ describe('case-only folder rename', () => {
 	});
 });
 
-describe('underscores in folder names (0.4.4 tag format)', () => {
-	it('rewrites the old tag of a folder with a real underscore once, and leaves "my folder" alone', async () => {
+describe('0.4.4 folder tags (%5F for a real underscore) are read and rewritten', () => {
+	it('a note tagged obsidian:my%5Ffolder lands in my_folder and gets the plain tag back once', async () => {
 		const h = await makeHarness();
 		h.vault.put('my_folder/Note 0.md', '---\nsimplenote-id: u0\n---\nbody');
-		seed(h, 'u0', 'Note 0\nbody', ['obsidian:my_folder', 'todo']);
-		seed(h, 's', 'Spaced\nbody', ['obsidian:my_folder']);
+		seed(h, 'u0', 'Note 0\nbody', ['obsidian:my%5Ffolder', 'todo']);
+		seed(h, 'd', 'Double\nbody', ['obsidian:my%255Ffolder']);
 		await h.engine.sync();
-		// "s" is a new note: decoded with the old rule it lands in the existing my_folder too
-		expect(h.vault.paths()).toEqual(['my_folder/Note 0.md', 'my_folder/Spaced.md']);
+		expect(h.vault.paths()).toEqual(['my_folder/Double.md', 'my_folder/Note 0.md']);
 		const r = await h.engine.sync();
 		expect(r.pushed).toBe(2);
-		expect(h.server.get('u0')?.tags).toEqual(['todo', 'obsidian:my%5Ffolder']);
+		expect(h.server.get('u0')?.tags).toEqual(['todo', 'obsidian:my_folder']);
+		expect(h.server.get('d')?.tags).toEqual(['obsidian:my_folder']);
 		expect(h.server.get('u0')?.content).toBe('Note 0\nbody');
 		const again = await h.engine.sync();
 		expect(again.pulled + again.pushed + again.trashed).toBe(0);
-		expect(h.vault.paths()).toEqual(['my_folder/Note 0.md', 'my_folder/Spaced.md']);
+	});
+
+	it('without such a folder the tag decodes to a folder with an underscore, never to "my%5Ffolder"', async () => {
+		const h = await makeHarness();
+		seed(h, 'a', 'Note\nbody', ['obsidian:Projects/therapy%5Fproject']);
+		seed(h, 'b', 'Other\nbody', ['obsidian:Projects/therapy%255Fproject']);
+		await h.engine.sync();
+		expect(h.vault.paths()).toEqual(['Projects/therapy_project/Note.md', 'Projects/therapy_project/Other.md']);
 	});
 
 	it('a space folder keeps its tag', async () => {
@@ -635,50 +623,40 @@ describe('underscores in folder names (0.4.4 tag format)', () => {
 		expect(h.server.get('a')?.tags).toEqual(['obsidian:my_folder']);
 	});
 
-	it('new notes in an underscore folder get the new tag, and a new device puts them back in that folder', async () => {
-		const h = await makeHarness();
-		h.vault.put('my_folder/New.md', 'hello');
-		h.advance(NEW_FILE_WAIT_MS + 1);
-		await h.engine.sync();
-		await h.engine.sync();
-		const note = [...h.server.notes.values()][0];
-		expect(note?.data?.tags).toEqual(['obsidian:my%5Ffolder']);
-		const other = await makeHarness({ server: h.server });
-		await other.engine.sync();
-		expect(other.vault.paths()).toEqual(['my_folder/New.md']);
-		const r = await other.engine.sync();
-		expect(r.pushed).toBe(0);
-	});
-
-	it('a large underscore folder counts as one change for the mass-change guard', async () => {
+	it('a large folder counts as one change for the mass-change guard', async () => {
 		const h = await makeHarness();
 		for (let i = 0; i < 60; i++) {
 			h.vault.put(`my_folder/Note ${i}.md`, `---\nsimplenote-id: n${i}\n---\nbody`);
-			seed(h, `n${i}`, `Note ${i}\nbody`, ['obsidian:my_folder']);
+			seed(h, `n${i}`, `Note ${i}\nbody`, ['obsidian:my%5Ffolder']);
 		}
 		await h.engine.sync();
 		const r = await h.engine.sync();
 		expect(h.confirmations).toHaveLength(0);
 		expect(r.pushed).toBe(60);
-		expect([...h.server.notes.values()].every((n) => n.data?.tags.includes('obsidian:my%5Ffolder'))).toBe(true);
+		expect([...h.server.notes.values()].every((n) => n.data?.tags.includes('obsidian:my_folder'))).toBe(true);
+	});
+});
+
+describe('iCloud for Windows conflict names', () => {
+	it('a file renamed to Note(1).md keeps its title and changes nothing on Simplenote', async () => {
+		const h = await synced();
+		await h.vault.rename('F/Note.md', 'F/Note(1).md');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note\nline one\nline two');
+		expect(h.server.version('a')).toBe(1);
+		const again = await h.engine.sync();
+		expect(again.pulled + again.pushed).toBe(0);
+		expect(h.vault.has('F/Note(1).md')).toBe(true);
 	});
 
-	it('a second updated device does not fight over the tag', async () => {
-		const h = await makeHarness();
-		h.vault.put('my_folder/Note.md', '---\nsimplenote-id: a\n---\nbody');
-		seed(h, 'a', 'Note\nbody', ['obsidian:my_folder']);
-		const other = await makeHarness({ server: h.server });
-		other.vault.put('my_folder/Note.md', '---\nsimplenote-id: a\n---\nbody');
-		await h.engine.sync();
-		await other.engine.sync();
-		await h.engine.sync();
-		await other.engine.sync();
-		const v = h.server.get('a');
-		expect(v?.tags).toEqual(['obsidian:my%5Ffolder']);
-		const r1 = await h.engine.sync();
-		const r2 = await other.engine.sync();
-		expect(r1.pulled + r1.pushed + r2.pulled + r2.pushed).toBe(0);
-		expect(other.vault.paths()).toEqual(['my_folder/Note.md']);
+	it('with Note.md and Note(1).md carrying one id, Note.md is the keeper', async () => {
+		const h = await synced();
+		h.vault.put('F/Note(1).md', h.vault.get('F/Note.md') as string);
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two');
+		const r = await h.engine.sync();
+		expect(r.pushed).toBe(1);
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two');
+		expect(logText(h)).toContain('Duplicate simplenote-id');
 	});
 });
 

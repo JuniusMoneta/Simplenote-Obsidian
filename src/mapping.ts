@@ -34,6 +34,13 @@ export function titleToFileName(title: string): string {
 }
 
 const SUFFIX_RE = / \((\d+)\)$/;
+/** `(1)`, `(1)(2)`, ... written directly after the name: iCloud for Windows names a conflicting copy this way. */
+const CONFLICT_SUFFIX_RE = /(\S)(\(\d+\))+$/;
+
+/** "Foo(1)" and "Foo(1)(1)" -> "Foo": the conflict suffix iCloud for Windows appends is never part of a title. */
+export function stripConflictSuffix(basename: string): string {
+	return basename.replace(CONFLICT_SUFFIX_RE, '$1');
+}
 
 /** "Foo (2)" -> "Foo". A bare name is returned unchanged. */
 export function stripCollisionSuffix(basename: string): string {
@@ -61,33 +68,33 @@ export function splitContent(content: string): { title: string; body: string } {
 
 // ---------- 5.3 Folders <-> tags ----------
 
+/**
+ * Folder tag for a vault folder: `obsidian:` + path, with `%` -> `%25`, `,` -> `%2C`, space -> `_`.
+ * A real `_` is not escaped, so `a_b` and `a b` share one tag (the folder that exists wins when
+ * decoding). 0.4.4 escaped `_` as `%5F`; 0.4.5 withdrew that, because a device still on an older
+ * version read the new tag as a folder named `my%5Ffolder` and moved every file there. This format
+ * must never change again: every version in use has to read every tag the same way.
+ */
 export function encodeFolderTag(folder: string): string | null {
-	const f = nfc(folder).replace(/^\/+|\/+$/g, '');
-	if (f.length === 0) return null;
-	const enc = f.replace(/%/g, '%25').replace(/,/g, '%2C').replace(/_/g, '%5F').replace(/ /g, '_');
-	return `${FOLDER_TAG_PREFIX}${enc}`;
-}
-
-/** Folder tag as written before 0.4.4, when a real `_` was not escaped (so `a_b` and `a b` collided). */
-export function legacyFolderTag(folder: string): string | null {
 	const f = nfc(folder).replace(/^\/+|\/+$/g, '');
 	if (f.length === 0) return null;
 	const enc = f.replace(/%/g, '%25').replace(/,/g, '%2C').replace(/ /g, '_');
 	return `${FOLDER_TAG_PREFIX}${enc}`;
 }
 
+/** Decodes a folder tag. `%5F` (written by 0.4.4) and `%255F` (0.4.4 re-encoding a `%5F` folder) both mean `_`. */
 export function decodeFolderTag(tag: string): string {
 	const enc = tag.slice(FOLDER_TAG_PREFIX.length);
-	return enc.replace(/_/g, ' ').replace(/%5F/gi, '_').replace(/%2C/gi, ',').replace(/%25/g, '%');
+	return enc.replace(/_/g, ' ').replace(/%255F/gi, '_').replace(/%5F/gi, '_').replace(/%2C/gi, ',').replace(/%25/g, '%');
 }
 
 /**
- * Tag key for change hashes: case-insensitive, and a folder tag's `%5F` counts as `_`, so a note
- * still tagged in the pre-0.4.4 form compares equal to its file (the tag is migrated separately).
+ * Tag key for change hashes: case-insensitive, and a folder tag's `%5F` / `%255F` (the 0.4.4 forms)
+ * count as `_`, so a note still tagged that way compares equal to its file (the tag is rewritten separately).
  */
 export function tagKey(tag: string): string {
 	const k = nameKey(tag);
-	return k.startsWith(FOLDER_TAG_PREFIX) ? k.replace(/%5f/g, '_') : k;
+	return k.startsWith(FOLDER_TAG_PREFIX) ? k.replace(/%255f/g, '_').replace(/%5f/g, '_') : k;
 }
 
 export function isFolderTag(tag: string): boolean {
@@ -102,9 +109,9 @@ export function splitTags(tags: string[]): { folderTags: string[]; otherTags: st
 }
 
 /**
- * Resolves a folder tag to a vault folder path. Prefers an existing folder whose encoded path
- * equals the tag (case-insensitive), then one whose pre-0.4.4 encoding equals it; otherwise
- * decodes the tag.
+ * Resolves a folder tag to a vault folder path. Prefers an existing folder whose encoded path equals
+ * the tag (case-insensitive), then an existing folder named like the decoded tag (so the 0.4.4 forms
+ * `%5F` and `%255F` land in the folder with the real `_`); otherwise decodes the tag.
  */
 export function folderFromTag(tag: string, existingFolders: Iterable<string>): string {
 	const want = nameKey(tag);
@@ -113,11 +120,9 @@ export function folderFromTag(tag: string, existingFolders: Iterable<string>): s
 		const enc = encodeFolderTag(f);
 		if (enc && nameKey(enc) === want) return f;
 	}
-	for (const f of folders) {
-		const enc = legacyFolderTag(f);
-		if (enc && nameKey(enc) === want) return f;
-	}
-	return decodeFolderTag(tag).replace(/^\/+|\/+$/g, '');
+	const decoded = decodeFolderTag(tag).replace(/^\/+|\/+$/g, '');
+	for (const f of folders) if (nameKey(f) === nameKey(decoded)) return f;
+	return decoded;
 }
 
 export function folderOfPath(path: string): string {
@@ -213,7 +218,7 @@ export interface LocalNote {
 
 /** Title to push for a file: the stored simplenote-title while it still maps to the basename, else the basename. */
 export function effectiveTitle(basename: string, storedTitle: string | null): { title: string; usesTitleKey: boolean } {
-	const base = nfc(basename);
+	const base = stripConflictSuffix(nfc(basename));
 	if (storedTitle !== null) {
 		const fn = titleToFileName(storedTitle);
 		if (fn === base || fn === stripCollisionSuffix(base)) return { title: nfc(storedTitle), usesTitleKey: true };
@@ -303,6 +308,6 @@ export function desiredBasename(content: string): string {
 /** Whether a pulled note needs a rename: true when the current basename no longer represents the title. */
 export function basenameMatchesTitle(basename: string, title: string): boolean {
 	const fn = titleToFileName(title);
-	const base = nfc(basename);
+	const base = stripConflictSuffix(nfc(basename));
 	return fn === base || fn === stripCollisionSuffix(base);
 }
