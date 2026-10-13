@@ -8,6 +8,8 @@ import {
 	exclusionReason,
 	fileToNote,
 	folderFromTag,
+	legacyFolderTag,
+	tagKey,
 	noteToFileText,
 	splitTags,
 	stripCollisionSuffix,
@@ -55,9 +57,24 @@ describe('folder tags', () => {
 		expect(encodeFolderTag('')).toBeNull();
 		expect(encodeFolderTag('/a/')).toBe('obsidian:a');
 		expect(decodeFolderTag('obsidian:Projects/Client_Work')).toBe('Projects/Client Work');
-		for (const f of ['A b/c-d', 'x&y', 'café', 'emoji 😀', 'with,comma', '50% off', 'a:b']) {
+		for (const f of ['A b/c-d', 'x&y', 'café', 'emoji 😀', 'with,comma', '50% off', 'a:b', 'my_folder', 'a_b c', '%5F', 'x,_y%', '_']) {
 			expect(decodeFolderTag(encodeFolderTag(f) as string)).toBe(f);
 		}
+	});
+	it('escapes a real underscore, so "a_b" and "a b" get different tags', () => {
+		expect(encodeFolderTag('my_folder')).toBe('obsidian:my%5Ffolder');
+		expect(encodeFolderTag('my folder')).toBe('obsidian:my_folder');
+		expect(legacyFolderTag('my_folder')).toBe('obsidian:my_folder');
+		expect(decodeFolderTag('obsidian:my%5ffolder')).toBe('my_folder');
+		expect(folderFromTag('obsidian:my%5Ffolder', ['other'])).toBe('my_folder');
+		expect(folderFromTag('obsidian:my%5Ffolder', ['my folder', 'My_Folder'])).toBe('My_Folder');
+	});
+	it('still understands pre-0.4.4 tags of folders with underscores', () => {
+		expect(folderFromTag('obsidian:my_folder', ['my_folder'])).toBe('my_folder');
+		// the exact current encoding wins over the old one
+		expect(folderFromTag('obsidian:my_folder', ['my_folder', 'my folder'])).toBe('my folder');
+		expect(tagKey('obsidian:My%5FFolder')).toBe(tagKey('obsidian:my_folder'));
+		expect(tagKey('todo%5f')).toBe('todo%5f');
 	});
 	it('prefers an existing folder with underscores', () => {
 		expect(folderFromTag('obsidian:my_folder', ['my_folder', 'other'])).toBe('my_folder');

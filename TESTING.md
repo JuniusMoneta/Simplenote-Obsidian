@@ -36,6 +36,9 @@ Setup: install through BRAT on each device, log in, keep the default settings, t
 
 ## Folders and tags
 
+- [ ] Case-only folder rename (`reading` → `Reading`) → every note in it (subfolders too) shows `obsidian:Reading` on the web, no `obsidian:reading` left; a second device with the old folder spelling does not change it back.
+- [ ] Folder `my_folder` and folder `my folder` → web shows `obsidian:my%5Ffolder` and `obsidian:my_folder`; a second device puts each note back in the right folder.
+- [ ] Two folders `Reading` and `reading` with notes in both → one notice asks to rename or merge; an empty leftover `Reading` after a rename → no notice, notes keep syncing.
 - [ ] Move a file to another folder → `obsidian:` tag replaced on the web.
 - [ ] Change the `obsidian:` tag on the web → file moved in Obsidian (folder created if needed).
 - [ ] Note created on the web without a folder tag → file created in the vault root.

@@ -64,13 +64,30 @@ export function splitContent(content: string): { title: string; body: string } {
 export function encodeFolderTag(folder: string): string | null {
 	const f = nfc(folder).replace(/^\/+|\/+$/g, '');
 	if (f.length === 0) return null;
+	const enc = f.replace(/%/g, '%25').replace(/,/g, '%2C').replace(/_/g, '%5F').replace(/ /g, '_');
+	return `${FOLDER_TAG_PREFIX}${enc}`;
+}
+
+/** Folder tag as written before 0.4.4, when a real `_` was not escaped (so `a_b` and `a b` collided). */
+export function legacyFolderTag(folder: string): string | null {
+	const f = nfc(folder).replace(/^\/+|\/+$/g, '');
+	if (f.length === 0) return null;
 	const enc = f.replace(/%/g, '%25').replace(/,/g, '%2C').replace(/ /g, '_');
 	return `${FOLDER_TAG_PREFIX}${enc}`;
 }
 
 export function decodeFolderTag(tag: string): string {
 	const enc = tag.slice(FOLDER_TAG_PREFIX.length);
-	return enc.replace(/_/g, ' ').replace(/%2C/gi, ',').replace(/%25/g, '%');
+	return enc.replace(/_/g, ' ').replace(/%5F/gi, '_').replace(/%2C/gi, ',').replace(/%25/g, '%');
+}
+
+/**
+ * Tag key for change hashes: case-insensitive, and a folder tag's `%5F` counts as `_`, so a note
+ * still tagged in the pre-0.4.4 form compares equal to its file (the tag is migrated separately).
+ */
+export function tagKey(tag: string): string {
+	const k = nameKey(tag);
+	return k.startsWith(FOLDER_TAG_PREFIX) ? k.replace(/%5f/g, '_') : k;
 }
 
 export function isFolderTag(tag: string): boolean {
@@ -85,13 +102,19 @@ export function splitTags(tags: string[]): { folderTags: string[]; otherTags: st
 }
 
 /**
- * Resolves a folder tag to a vault folder path. Prefers an existing folder whose encoded
- * path equals the tag (case-insensitive); otherwise decodes the tag.
+ * Resolves a folder tag to a vault folder path. Prefers an existing folder whose encoded path
+ * equals the tag (case-insensitive), then one whose pre-0.4.4 encoding equals it; otherwise
+ * decodes the tag.
  */
 export function folderFromTag(tag: string, existingFolders: Iterable<string>): string {
 	const want = nameKey(tag);
-	for (const f of existingFolders) {
+	const folders = [...existingFolders];
+	for (const f of folders) {
 		const enc = encodeFolderTag(f);
+		if (enc && nameKey(enc) === want) return f;
+	}
+	for (const f of folders) {
+		const enc = legacyFolderTag(f);
 		if (enc && nameKey(enc) === want) return f;
 	}
 	return decodeFolderTag(tag).replace(/^\/+|\/+$/g, '');

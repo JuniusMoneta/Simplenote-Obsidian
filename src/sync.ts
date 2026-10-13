@@ -16,11 +16,13 @@ import {
 	folderOfPath,
 	isFolderTag,
 	joinPath,
+	legacyFolderTag,
 	nameKey,
 	noteToFileText,
 	splitContent,
 	splitTags,
 	stripCollisionSuffix,
+	tagKey,
 	titleToFileName,
 	uniqueBasename,
 	type ExclusionReason,
@@ -183,6 +185,8 @@ export class SyncEngine {
 	private dryRun = false;
 	/** Paths of files the current plan will create, so link translation can resolve them during the batch. */
 	private planned = new Map<string, string>();
+	/** Folder pairs differing only by case that were already shown in a notice this session. */
+	private caseConflictNoticed = new Set<string>();
 	/** Name of the device holding the push lease while this device pulls only; null when this device pushes. */
 	pullOnly: string | null = null;
 	paused = false;
@@ -491,10 +495,16 @@ export class SyncEngine {
 			if (typeof id === 'string' && id.length > 0) presentIds.add(id);
 		};
 		// Simplenote tags are case-insensitive: two folders that differ only by case map to one tag.
+		// The folder that holds notes wins, so an empty leftover from a case-only rename does no harm.
+		const markdownFiles = this.vault.listMarkdownFiles();
+		const foldersWithNotes = new Set(markdownFiles.map((f) => folderOfPath(f.path)));
 		const canonicalFolder = new Map<string, string>();
-		for (const f of [...this.vault.listFolders()].sort()) if (!canonicalFolder.has(nameKey(f))) canonicalFolder.set(nameKey(f), f);
+		for (const f of [...this.vault.listFolders()].sort()) {
+			const current = canonicalFolder.get(nameKey(f));
+			if (current === undefined || (!foldersWithNotes.has(current) && foldersWithNotes.has(f))) canonicalFolder.set(nameKey(f), f);
+		}
 		const warnedFolders = new Set<string>();
-		for (const info of this.vault.listMarkdownFiles()) {
+		for (const info of markdownFiles) {
 			pathKeys.add(nameKey(info.path));
 			let reason = exclusionReason(info.path, info.size, settings);
 			const folder = folderOfPath(info.path);
@@ -504,6 +514,11 @@ export class SyncEngine {
 				if (!warnedFolders.has(folder)) {
 					warnedFolders.add(folder);
 					this.log.warn(`folder "${folder}" differs only by case from "${canonical}"; its notes are skipped (Simplenote tags are case-insensitive)`);
+					const pair = `${canonical}\u0000${folder}`;
+					if (!this.caseConflictNoticed.has(pair)) {
+						this.caseConflictNoticed.add(pair);
+						this.deps.notice(`Simplenote: folders "${canonical}" and "${folder}" differ only in capital letters. Simplenote cannot tell them apart, so the notes in "${folder}" are not syncing. Please rename one folder or move its notes into the other, and do not keep two folders like this.`);
+					}
 				}
 			}
 			const lf: LocalFile = { info, id: null, changed: true, excluded: reason };
@@ -576,7 +591,7 @@ export class SyncEngine {
 		for (const p of Object.keys(this.state.problems)) if (!pathKeys.has(nameKey(p))) delete this.state.problems[p];
 		if (excluded.length > 0) this.log.info(`${excluded.length} file(s) excluded from sync (command "List excluded files" shows them)`);
 		const noId = files.filter((f) => f.id === null);
-		return { files: files.filter((f) => f.id === null || byId.get(f.id) === f), byId, presentIds, noId, excluded, pathKeys, folders: this.vault.listFolders() };
+		return { files: files.filter((f) => f.id === null || byId.get(f.id) === f), byId, presentIds, noId, excluded, pathKeys, folders: this.vault.listFolders().filter((f) => canonicalFolder.get(nameKey(f)) === f) };
 	}
 
 	private pickKeeper(id: string, list: LocalFile[]): LocalFile {
@@ -639,11 +654,11 @@ export class SyncEngine {
 	}
 
 	private async hashLocal(lf: LocalFile, note: LocalNote): Promise<string> {
-		return noteHash(this.remoteContentFor(lf, note), this.localTags(lf, note).map(nameKey), this.pinnedOf(lf.info.path, note));
+		return noteHash(this.remoteContentFor(lf, note), this.localTags(lf, note).map(tagKey), this.pinnedOf(lf.info.path, note));
 	}
 
 	private async hashRemote(data: NoteData): Promise<string> {
-		return noteHash(data.content, data.tags.map(nameKey), data.systemTags.includes('pinned'));
+		return noteHash(data.content, data.tags.map(tagKey), data.systemTags.includes('pinned'));
 	}
 
 	/** Hash of a file as written, used as the state hash so unchanged files compare equal. */
@@ -840,18 +855,19 @@ export class SyncEngine {
 			const localHash = await this.hashLocal(lf, note);
 			const remoteHash = await this.hashRemote(data);
 			handled.add(id);
-			if (localHash === remoteHash) {
+			const tagUpdate = st ? this.folderTagUpdate(st, lf) : null;
+			if (localHash === remoteHash && !tagUpdate) {
 				actions.push(this.adoptAction(lf, id, data, version, localHash));
 			} else if (!st) {
 				// linked by id only (e.g. first sync on a new device): newer side wins
 				if (lf.info.mtime > data.modificationDate * 1000) actions.push(this.pushAction(lf, note, id, version, data, undefined));
 				else actions.push(this.updateLocalAction(lf, id, data, version, ctx));
-			} else if (localHash === st.contentHash) {
+			} else if (localHash === st.contentHash && !tagUpdate) {
 				actions.push(this.updateLocalAction(lf, id, data, version, ctx));
-			} else if (st.version === version) {
-				actions.push(this.pushAction(lf, note, id, st.version, data, st));
 			} else {
-				actions.push(this.pushAction(lf, note, id, st.version, data, st, true));
+				const a = this.pushAction(lf, note, id, st.version, data, st, st.version !== version);
+				if (tagUpdate && localHash === st.contentHash) a.group = tagUpdate;
+				actions.push(a);
 			}
 		}
 
@@ -861,6 +877,15 @@ export class SyncEngine {
 			if (lf.id) {
 				const st = this.state.notes[lf.id];
 				if (st) {
+					const tagUpdate = this.folderTagUpdate(st, lf);
+					if (tagUpdate) {
+						if (!(await this.loadLocal(lf))) continue;
+						const a = this.pushAction(lf, lf.note as LocalNote, lf.id, st.version, undefined, st);
+						a.group = tagUpdate;
+						actions.push(a);
+						handled.add(lf.id);
+						continue;
+					}
 					if (!lf.changed && nameKey(st.path) === nameKey(lf.info.path)) continue;
 					if (!(await this.loadLocal(lf))) continue;
 					const note = lf.note as LocalNote;
@@ -939,11 +964,11 @@ export class SyncEngine {
 
 	/** Content-and-tags hash of a local file, ignoring pinned (bookmarks are device-local). */
 	private async twinHashLocal(lf: LocalFile, note: LocalNote): Promise<string> {
-		return noteHash(this.remoteContentFor(lf, note), this.localTags(lf, note).map(nameKey), false);
+		return noteHash(this.remoteContentFor(lf, note), this.localTags(lf, note).map(tagKey), false);
 	}
 
 	private async twinHashRemote(data: NoteData): Promise<string> {
-		return noteHash(data.content, data.tags.map(nameKey), false);
+		return noteHash(data.content, data.tags.map(tagKey), false);
 	}
 
 	/** A local file without an id whose content and tags equal the remote note's. */
@@ -1024,9 +1049,9 @@ export class SyncEngine {
 		// Copies in one folder differ in file name, hence in title: compare body and tags only.
 		const copyHash = (lf: LocalFile, note: LocalNote): Promise<string> => {
 			const body = splitContent(this.remoteContentFor(lf, note)).body;
-			return noteHash(`\n${body}`, this.localTags(lf, note).map(nameKey), false);
+			return noteHash(`\n${body}`, this.localTags(lf, note).map(tagKey), false);
 		};
-		const remoteCopyHash = (data: NoteData): Promise<string> => noteHash(`\n${splitContent(data.content).body}`, data.tags.map(nameKey), false);
+		const remoteCopyHash = (data: NoteData): Promise<string> => noteHash(`\n${splitContent(data.content).body}`, data.tags.map(tagKey), false);
 		const hashes = new Map<LocalFile, string>();
 		for (const lf of files) hashes.set(lf, await copyHash(lf, lf.note as LocalNote));
 		const trashFile = async (lf: LocalFile, why: string): Promise<void> => {
@@ -1105,6 +1130,25 @@ export class SyncEngine {
 		if (!this.dryRun) this.store.save(this.state);
 		this.log.info(`duplicate cleanup done: ${result.trashed.length} file(s) trashed, ${result.notesTrashed} note(s) trashed on Simplenote, ${result.skipped.length} left alone`);
 		return result;
+	}
+
+	/**
+	 * Simplenote keeps the folder tag as written, but change hashes compare tags loosely (case, and
+	 * `%5F` = `_`). Returns a plan group when the note must be pushed only to rewrite its folder tag:
+	 * - the folder changed only in case on this device since the last sync (`reading` -> `Reading`);
+	 * - the note still has the pre-0.4.4 tag of a folder with a real `_` (`obsidian:my_folder`).
+	 * Another device that still has an old folder spelling does not push it back: its folder did not
+	 * change, and the tag it sees is not the pre-0.4.4 form of its folder.
+	 */
+	private folderTagUpdate(st: NoteState, lf: LocalFile): string | null {
+		const before = folderOfPath(st.path);
+		const after = folderOfPath(lf.info.path);
+		const tag = encodeFolderTag(after);
+		if (!tag || st.tags.includes(tag)) return null;
+		if (before !== after && nameKey(before) === nameKey(after)) return `Folder "${before}" renamed to "${after}" (folder tag case)`;
+		const legacy = legacyFolderTag(after);
+		if (legacy !== tag && legacy && st.tags.includes(legacy)) return `Folder "${after}": folder tag ${legacy} -> ${tag}`;
+		return null;
 	}
 
 	// ---------------- actions ----------------
@@ -1340,7 +1384,7 @@ export class SyncEngine {
 			systemTags = remote.systemTags;
 		}
 		systemTags = setPinned(systemTags, pinned);
-		const hash = await noteHash(content, tags.map(nameKey), pinned);
+		const hash = await noteHash(content, tags.map(tagKey), pinned);
 		const ccid = await computeCcid(id, baseVersion, hash);
 		if (this.dryRun) {
 			this.log.info(`[dry-run] push ${lf.info.path} (base v${baseVersion})`);
@@ -1350,7 +1394,9 @@ export class SyncEngine {
 		// identical edit that another device pushed meanwhile is adopted instead of applied twice.
 		const current = await this.client.getNote(id);
 		if (current && current.version !== baseVersion) {
-			if ((await this.hashRemote(current.data)) === hash) {
+			// folder tags must match exactly: a folder tag rewrite (case, `_`) changes nothing else
+			const sameFolderTags = tags.filter(isFolderTag).every((t) => current.data.tags.includes(t));
+			if (sameFolderTags && (await this.hashRemote(current.data)) === hash) {
 				this.log.info(`${lf.info.path}: identical content already on Simplenote (v${current.version}); not pushing`);
 				this.state.notes[id] = {
 					id,
@@ -1381,7 +1427,7 @@ export class SyncEngine {
 			const baseContent = base?.data.content ?? res.data.content;
 			const merged = mergeStrings(baseContent, content, res.data.content);
 			const mergedTags = mergeTags(base?.data.tags ?? res.data.tags, tags, res.data.tags);
-			const mergedHash = await noteHash(merged, mergedTags.map(nameKey), pinned);
+			const mergedHash = await noteHash(merged, mergedTags.map(tagKey), pinned);
 			res = await this.client.postNote(
 				id,
 				{ content: merged, tags: mergedTags, systemTags, deleted: false, modificationDate: this.now() / 1000 },
@@ -1391,7 +1437,7 @@ export class SyncEngine {
 		}
 		this.log.info(`pushed ${lf.info.path} -> v${res.version}${res.outcome === 'unchanged' ? ' (no change on server)' : ''}`);
 		const resultHash = await this.hashRemote(res.data);
-		const localHash = await noteHash(content, tags.map(nameKey), pinned);
+		const localHash = await noteHash(content, tags.map(tagKey), pinned);
 		if (resultHash !== localHash) {
 			this.log.info(`${lf.info.path}: server returned a merged note; writing it back`);
 			await this.writeLocal(lf.info.path, id, res.data, res.version, { taken: new Set(), folders: this.vault.listFolders() });
@@ -1462,7 +1508,7 @@ export class SyncEngine {
 		const tags = this.localTags(lf, note);
 		const pinned = this.pinnedOf(lf.info.path, note);
 		const systemTags = setPinned(['markdown'], pinned);
-		const hash = await noteHash(content, tags.map(nameKey), pinned);
+		const hash = await noteHash(content, tags.map(tagKey), pinned);
 		const nowSec = this.now() / 1000;
 		const res = await this.client.postNote(
 			id,

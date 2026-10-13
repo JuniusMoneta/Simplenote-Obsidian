@@ -46,13 +46,27 @@ The script prints a "Findings for NOTES.md" block. Paste it into the sections be
 
 `obsidian:` + folder path, with:
 
+- `%` → `%25`, `,` → `%2C` (commas break the web tag input), `_` → `%5F` (since 0.4.4)
 - space → `_`
-- `%` → `%25`, `,` → `%2C` (commas break the web tag input)
 - everything else (including `/`, `:`, `-`, `&`, accented letters, emoji) unchanged.
 
-Decoding reverses the three rules. Because `_` is ambiguous, decoding first looks for an existing
-vault folder whose encoded path equals the tag (compared case-insensitively and NFC-normalized).
-Two vault folders that differ only in case map to the same tag: the second one is skipped with a warning.
+Decoding reverses the rules. Before 0.4.4 a real `_` was not escaped, so `my_folder` and `my folder` both
+became `obsidian:my_folder`. Decoding therefore first looks for an existing vault folder whose encoded
+path equals the tag, then for one whose pre-0.4.4 encoding equals it (both compared case-insensitively and
+NFC-normalized); otherwise it decodes (`_` = space). A note that still carries the pre-0.4.4 tag of a
+folder with a real `_` is pushed once with the new tag (one grouped change for the mass-change guard).
+Change hashes count a folder tag's `%5F` as `_`, so the new tag alone never looks like an edit.
+**All devices need 0.4.4 or later:** an older version decodes `obsidian:my%5Ffolder` as a folder named
+`my%5Ffolder`.
+
+Two vault folders that differ only in case map to the same tag. The one that holds notes wins (an empty
+leftover from a rename does no harm); if both hold notes, the first in sort order wins, the notes of the
+other are skipped, and a notice (once per session) asks the owner to rename or merge one of them.
+A case-only folder rename (`reading` → `Reading`) on a device replaces the folder tag on every note in
+that folder and its subfolders (`obsidian:reading` → `obsidian:Reading`); Simplenote stores tag case. The
+push is triggered by the file's folder case changing since its last sync on that device, so another
+device that still has the old spelling does not push it back. It keeps its folder name until vault sync
+renames it, and pulled notes still go into it. The pushes count as one change for the mass-change guard.
 
 ### Change hash and ccid
 
