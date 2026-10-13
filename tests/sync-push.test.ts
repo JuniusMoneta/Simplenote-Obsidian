@@ -532,3 +532,77 @@ describe('pinned property migration', () => {
 		expect(h.store.load().pinnedMigrated).toBe(true);
 	});
 });
+
+describe('case-only folder rename', () => {
+	async function reading(): Promise<H> {
+		const h = await makeHarness();
+		seed(h, 'a', 'One\nbody', ['obsidian:reading', 'todo']);
+		seed(h, 'b', 'Two\nbody', ['obsidian:reading/later']);
+		seed(h, 'c', 'Three\nbody', ['obsidian:other']);
+		await h.engine.sync();
+		return h;
+	}
+
+	it('replaces the folder tag with the new spelling on every note, subfolders included', async () => {
+		const h = await reading();
+		const before = h.server.get('a')?.content;
+		await h.vault.renameFolder('reading', 'Reading');
+		const r = await h.engine.sync();
+		expect(r.pushed).toBe(2);
+		expect(h.server.get('a')?.tags).toEqual(['todo', 'obsidian:Reading']);
+		expect(h.server.get('b')?.tags).toEqual(['obsidian:Reading/later']);
+		expect(h.server.get('c')?.tags).toEqual(['obsidian:other']);
+		expect(h.server.get('a')?.content).toBe(before);
+		expect(h.vault.paths()).toEqual(['Reading/One.md', 'Reading/later/Two.md', 'other/Three.md']);
+		const again = await h.engine.sync();
+		expect(again.pulled + again.pushed + again.trashed).toBe(0);
+	});
+
+	it('counts a renamed folder as one change for the mass-change guard', async () => {
+		const h = await makeHarness();
+		for (let i = 0; i < 60; i++) seed(h, `n${i}`, `Note ${i}\nbody`, ['obsidian:reading']);
+		await h.engine.sync();
+		await h.vault.renameFolder('reading', 'Reading');
+		const r = await h.engine.sync();
+		expect(h.confirmations).toHaveLength(0);
+		expect(r.pushed).toBe(60);
+		expect([...h.server.notes.values()].every((n) => n.data?.tags.includes('obsidian:Reading'))).toBe(true);
+	});
+
+	it('another device with the old spelling does not push it back', async () => {
+		const h = await reading();
+		const other = await makeHarness({ server: h.server });
+		await other.engine.sync();
+		expect(other.vault.has('reading/One.md')).toBe(true);
+		await h.vault.renameFolder('reading', 'Reading');
+		await h.engine.sync();
+		for (let i = 0; i < 2; i++) {
+			const r = await other.engine.sync();
+			expect(r.pushed).toBe(0);
+		}
+		expect(other.vault.paths()).toContain('reading/One.md');
+		expect(h.server.get('a')?.tags).toContain('obsidian:Reading');
+		const back = await h.engine.sync();
+		expect(back.pulled + back.pushed).toBe(0);
+	});
+
+	it('keeps the new spelling when the note also changed on Simplenote', async () => {
+		const h = await reading();
+		await h.vault.renameFolder('reading', 'Reading');
+		h.server.seed('a', { content: 'One\nbody edited remotely', tags: ['obsidian:reading', 'todo'] });
+		await h.engine.sync();
+		expect(h.server.get('a')?.tags).toContain('obsidian:Reading');
+		expect(h.server.get('a')?.tags).not.toContain('obsidian:reading');
+		expect(h.server.get('a')?.content).toBe('One\nbody edited remotely');
+		expect(h.vault.get('Reading/One.md')).toContain('body edited remotely');
+	});
+
+	it('pushes the new spelling together with a local edit', async () => {
+		const h = await reading();
+		await h.vault.renameFolder('reading', 'Reading');
+		h.vault.put('Reading/One.md', h.vault.get('Reading/One.md') + '\nmore');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('One\nbody\nmore');
+		expect(h.server.get('a')?.tags).toContain('obsidian:Reading');
+	});
+});

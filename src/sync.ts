@@ -812,18 +812,19 @@ export class SyncEngine {
 			const localHash = await this.hashLocal(lf, note);
 			const remoteHash = await this.hashRemote(data);
 			handled.add(id);
-			if (localHash === remoteHash) {
+			const caseRename = st ? this.folderCaseRename(st, lf) : null;
+			if (localHash === remoteHash && !caseRename) {
 				actions.push(this.adoptAction(lf, id, data, version, localHash));
 			} else if (!st) {
 				// linked by id only (e.g. first sync on a new device): newer side wins
 				if (lf.info.mtime > data.modificationDate * 1000) actions.push(this.pushAction(lf, note, id, version, data, undefined));
 				else actions.push(this.updateLocalAction(lf, id, data, version, ctx));
-			} else if (localHash === st.contentHash) {
+			} else if (localHash === st.contentHash && !caseRename) {
 				actions.push(this.updateLocalAction(lf, id, data, version, ctx));
-			} else if (st.version === version) {
-				actions.push(this.pushAction(lf, note, id, st.version, data, st));
 			} else {
-				actions.push(this.pushAction(lf, note, id, st.version, data, st, true));
+				const a = this.pushAction(lf, note, id, st.version, data, st, st.version !== version);
+				if (caseRename && localHash === st.contentHash) a.group = caseRename;
+				actions.push(a);
 			}
 		}
 
@@ -833,6 +834,15 @@ export class SyncEngine {
 			if (lf.id) {
 				const st = this.state.notes[lf.id];
 				if (st) {
+					const caseRename = this.folderCaseRename(st, lf);
+					if (caseRename) {
+						if (!(await this.loadLocal(lf))) continue;
+						const a = this.pushAction(lf, lf.note as LocalNote, lf.id, st.version, undefined, st);
+						a.group = caseRename;
+						actions.push(a);
+						handled.add(lf.id);
+						continue;
+					}
 					if (!lf.changed && nameKey(st.path) === nameKey(lf.info.path)) continue;
 					if (!(await this.loadLocal(lf))) continue;
 					const note = lf.note as LocalNote;
@@ -1079,6 +1089,20 @@ export class SyncEngine {
 		return result;
 	}
 
+	/**
+	 * Simplenote keeps tag case, but the plugin compares tags case-insensitively. When the folder of a
+	 * file changed only in case on this device since the last sync, and the note still carries the old
+	 * spelling, the note must be pushed with the new folder tag. Returns the plan group, or null.
+	 */
+	private folderCaseRename(st: NoteState, lf: LocalFile): string | null {
+		const before = folderOfPath(st.path);
+		const after = folderOfPath(lf.info.path);
+		if (before === after || nameKey(before) !== nameKey(after)) return null;
+		const tag = encodeFolderTag(after);
+		if (!tag || st.tags.includes(tag)) return null;
+		return `Folder "${before}" renamed to "${after}" (folder tag case)`;
+	}
+
 	// ---------------- actions ----------------
 
 	private targetFolder(data: NoteData, ctx: { folders: string[] }, path?: string): string {
@@ -1322,7 +1346,9 @@ export class SyncEngine {
 		// identical edit that another device pushed meanwhile is adopted instead of applied twice.
 		const current = await this.client.getNote(id);
 		if (current && current.version !== baseVersion) {
-			if ((await this.hashRemote(current.data)) === hash) {
+			// folder tags must match exactly: a case-only folder rename changes nothing else
+			const sameFolderTags = tags.filter(isFolderTag).every((t) => current.data.tags.includes(t));
+			if (sameFolderTags && (await this.hashRemote(current.data)) === hash) {
 				this.log.info(`${lf.info.path}: identical content already on Simplenote (v${current.version}); not pushing`);
 				this.state.notes[id] = {
 					id,

@@ -53,6 +53,11 @@ The script prints a "Findings for NOTES.md" block. Paste it into the sections be
 Decoding reverses the three rules. Because `_` is ambiguous, decoding first looks for an existing
 vault folder whose encoded path equals the tag (compared case-insensitively and NFC-normalized).
 Two vault folders that differ only in case map to the same tag: the second one is skipped with a warning.
+A case-only folder rename (`reading` → `Reading`) on a device replaces the folder tag on every note in
+that folder and its subfolders (`obsidian:reading` → `obsidian:Reading`); Simplenote stores tag case. The
+push is triggered by the file's folder case changing since its last sync on that device, so another
+device that still has the old spelling does not push it back. It keeps its folder name until vault sync
+renames it, and pulled notes still go into it. The pushes count as one change for the mass-change guard.
 
 ### Change hash and ccid
 

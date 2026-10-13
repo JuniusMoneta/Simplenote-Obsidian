@@ -70,6 +70,12 @@ export class MemoryVault implements VaultAdapter {
 	paths(): string[] {
 		return [...this.files.values()].map((f) => f.path).sort();
 	}
+	/** Simulates the owner renaming a folder in Obsidian: files move and the old folder is gone. */
+	async renameFolder(from: string, to: string): Promise<void> {
+		for (const p of this.paths()) if (key(p).startsWith(`${key(from)}/`)) await this.rename(p, `${to}${p.slice(from.length)}`);
+		for (const f of [...this.folders]) if (key(f) === key(from) || key(f).startsWith(`${key(from)}/`)) this.folders.delete(f);
+		this.ensureFolders(`${to}/x`);
+	}
 	private ensureFolders(path: string): void {
 		const parts = path.split('/');
 		for (let i = 1; i < parts.length; i++) this.folders.add(parts.slice(0, i).join('/'));
