@@ -14,6 +14,7 @@ import {
 	fileToNote,
 	folderFromTag,
 	folderOfPath,
+	isConflictCopyName,
 	isFolderTag,
 	joinPath,
 	nameKey,
@@ -187,6 +188,8 @@ export class SyncEngine {
 	private state!: SyncState;
 	private dryRun = false;
 	private sharedVault = false;
+	/** The "another device uses the shared-vault setting" notice was shown this session. */
+	private sharedNoticed = false;
 	/** Set when this device just took the sync lease over: the next sync fetches the full index to catch up. */
 	private fullNext = false;
 	/** Paths of files the current plan will create, so link translation can resolve them during the batch. */
@@ -333,9 +336,22 @@ export class SyncEngine {
 				} else throw e;
 			}
 			this.log.debug(`index: ${fetched.entries.length} entries, full=${full}`);
-			const lease = settings.sharedVault && !this.dryRun ? this.deps.lease : undefined;
 			for (const e of fetched.entries) this.deps.lease?.observe(e);
 			fetched.entries = fetched.entries.filter((e) => e.id !== LEASE_NOTE_ID);
+			// A device without the shared-vault setting follows the lease anyway once one exists: settings live in
+			// .obsidian, which a vault sync does not always carry, and one device pushing on its own next to the
+			// lease holder produced duplicated fragments and conflict copies (NOTES.md, 0.4.4 incident, item 7).
+			let shared = settings.sharedVault === true;
+			if (!shared && this.deps.lease && !this.dryRun && (await this.deps.lease.exists())) {
+				shared = true;
+				if (!this.sharedNoticed) {
+					this.sharedNoticed = true;
+					this.log.warn('another device syncs this vault with the shared-vault setting; following its sync lease (turn the setting on here as well)');
+					this.deps.notice('Simplenote: another device syncs this vault with "Shared vault: one device syncs at a time". This device follows that lease. Please turn the setting on here as well.');
+				}
+			}
+			this.sharedVault = shared;
+			const lease = shared && !this.dryRun ? this.deps.lease : undefined;
 			await this.migratePinnedProperty();
 			let scan = await this.scanLocal(settings);
 			let preConfirmed = false;
@@ -922,6 +938,15 @@ export class SyncEngine {
 					}
 					if (!lf.changed && nameKey(st.path) === nameKey(lf.info.path)) continue;
 					if (!(await this.loadLocal(lf))) continue;
+					if (
+						nameKey(st.path) !== nameKey(lf.info.path) &&
+						nameKey(folderOfPath(st.path)) === nameKey(folderOfPath(lf.info.path)) &&
+						isConflictCopyName(basenameOfPath(st.path), basenameOfPath(lf.info.path))
+					) {
+						// "Note.md" became "Note 2.md" or "Note(1).md": the vault sync made a conflict copy; keep the title
+						this.log.warn(`${lf.info.path}: named like a sync conflict copy of ${st.path}; keeping the note title`);
+						lf.note = fileToNote(lf.text ?? '', basenameOfPath(st.path));
+					}
 					const note = lf.note as LocalNote;
 					const h = await this.hashLocal(lf, note);
 					if (h === st.contentHash) {

@@ -204,6 +204,14 @@ Within fifteen minutes:
    it was unreadable and carried no readable id. The planner saw "file gone, note changed", found `Title.md`
    taken, and created `Title (2).md`. Rule: when the file a note would get exists but is unreadable, the note
    waits in `pendingRemote` instead (`scan.unreadable`), for notes with and without state.
+7. **A device without the setting pushed next to the holder (0.4.7).** The next night two notes gained
+   `Note 2.md` / `Note(1).md` copies again and one title became "Obsidian Sync 21. PC move the vault…": the
+   macOS conflict name `Obsidian Sync 2` was pushed as the title, then two devices pushed overlapping edits and
+   the server merge dropped the newline after the title. The PC held the lease and logged no pushes, so the other
+   pusher was a device whose `.obsidian` (and therefore `data.json`) never synced and had the shared-vault
+   setting off. Rules: a lease note in the account makes every device follow the lease (`PushLease.exists`), with
+   a notice to turn the setting on; and a synced file whose new name is its old name plus a conflict suffix
+   (`isConflictCopyName`) keeps its title instead of pushing the suffix.
 
 Repair was done by hand on the Windows copy of the vault (duplicates compared body by body, the newest
 body kept, the stored `simplenote-title` kept, copies moved to `.trash/repair-20261012`), the nine notes

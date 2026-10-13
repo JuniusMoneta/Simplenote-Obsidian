@@ -13,6 +13,7 @@ import {
 	splitTags,
 	stripCollisionSuffix,
 	stripConflictSuffix,
+	isConflictCopyName,
 	effectiveTitle,
 	titleToFileName,
 	uniqueBasename,
@@ -264,6 +265,17 @@ describe('iCloud for Windows conflict names', () => {
 		expect(stripConflictSuffix('Journal Red (1)')).toBe('Journal Red (1)');
 		expect(stripConflictSuffix('Note (2)')).toBe('Note (2)');
 		expect(stripConflictSuffix('(1)')).toBe('(1)');
+	});
+	it('recognizes a conflict copy name of a known file', () => {
+		expect(isConflictCopyName('Note', 'Note 2')).toBe(true);
+		expect(isConflictCopyName('Note', 'Note(1)')).toBe(true);
+		expect(isConflictCopyName('Note', 'Note (2)')).toBe(true);
+		expect(isConflictCopyName('Untitled (5)', 'Untitled (5)(1)')).toBe(true);
+		expect(isConflictCopyName('Journal Blue (7)', 'Journal Blue (7) 4')).toBe(true);
+		expect(isConflictCopyName('Journal Blue (7)', 'Journal Blue (7) 4 Latest')).toBe(false);
+		expect(isConflictCopyName('Sketch ideas 103', 'Sketch ideas 104')).toBe(false);
+		expect(isConflictCopyName('Note', 'Note')).toBe(false);
+		expect(isConflictCopyName('Note', 'Other 2')).toBe(false);
 	});
 	it('a conflict copy keeps the note title', () => {
 		expect(effectiveTitle('The True Ontology(1)', null).title).toBe('The True Ontology');

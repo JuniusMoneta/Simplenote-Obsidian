@@ -98,6 +98,9 @@ Dry-run mode shows the same dialog and changes nothing.
   kept in the Simplenote trash. It moves by itself when the holder stops syncing for 3 minutes (app closed, phone
   in the background); the command "Take over sync on this device" moves it at once. A device that takes the lease
   over starts with a full reconcile. The status bar shows `standby (Windows abcd syncs)` on the other devices.
+  A device where the setting is off follows the lease anyway as soon as one exists in the account (it shows a
+  notice asking you to turn the setting on), so a device whose settings did not sync cannot push on its own.
+  A synced file that turns up under a conflict-copy name (`Note 2.md`, `Note(1).md`) keeps its title.
   On a shared vault a file that vanishes is re-checked for 10 minutes (not 60 seconds) before its note is trashed,
   because the vault sync can hide files for minutes while it renames folders.
 - Uploads are throttled to 2 requests per second and resume after Obsidian restarts.

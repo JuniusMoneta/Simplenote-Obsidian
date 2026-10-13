@@ -197,6 +197,27 @@ describe('push lease on a shared vault', () => {
 		expect(vault.get('F/Note.md')).toContain('edited while on standby');
 	});
 
+	it('a device with the setting off follows the lease once another device created one', async () => {
+		const server = new FakeSimperium();
+		server.addUser('u', 'p');
+		const clock = { now: 1_800_000_000_000 };
+		const vault = new MemoryVault(() => clock.now);
+		const win = await makeHarness({ server, vault, clock, settings: { sharedVault: true }, device: { id: 'win0000001', name: 'Windows win0' } });
+		const ios = await makeHarness({ server, vault, clock, settings: { sharedVault: false }, device: { id: 'ios0000001', name: 'iPhone ios0' } });
+		server.seed('a', { content: 'Note\nline one', tags: ['obsidian:F'] });
+		await win.engine.sync();
+		await ios.engine.sync();
+		expect(ios.engine.pullOnly).toBe('Windows win0');
+		expect(ios.notices.join('\n')).toContain('follows that lease');
+		vault.put('F/Note.md', '---\nsimplenote-id: a\n---\nline one\ntyped on the phone');
+		clock.now += 15_000;
+		const r = await ios.engine.sync();
+		expect(r.pushed).toBe(0);
+		expect(server.get('a')?.content).toBe('Note\nline one');
+		await win.engine.sync();
+		expect(server.get('a')?.content).toBe('Note\nline one\ntyped on the phone');
+	});
+
 	it('a full reconcile on a pull-only device does not touch the lease note or trash anything', async () => {
 		const { win, ios, server, vault } = await sharedVault();
 		await win.engine.sync();

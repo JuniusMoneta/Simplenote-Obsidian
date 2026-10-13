@@ -42,6 +42,24 @@ export function stripConflictSuffix(basename: string): string {
 	return basename.replace(CONFLICT_SUFFIX_RE, '$1');
 }
 
+/**
+ * True when `candidate` is `base` plus one or more suffixes a vault sync appends to a conflicting copy:
+ * "Note 2" (iCloud on macOS), "Note(1)" (iCloud for Windows), "Note (2)". Used when a synced file turns
+ * up under such a name: that is a conflict copy, not a rename, and its title must not change.
+ */
+export function isConflictCopyName(base: string, candidate: string): boolean {
+	const b = nfc(base);
+	let s = nfc(candidate);
+	if (s === b) return false;
+	for (let i = 0; i < 6 && s.length > b.length; i++) {
+		const m = /^(.*?)(?: \d+| ?\(\d+\))$/.exec(s);
+		if (!m) return false;
+		s = m[1] as string;
+		if (s === b) return true;
+	}
+	return false;
+}
+
 /** "Foo (2)" -> "Foo". A bare name is returned unchanged. */
 export function stripCollisionSuffix(basename: string): string {
 	const m = SUFFIX_RE.exec(basename);

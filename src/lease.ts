@@ -83,6 +83,12 @@ export class PushLease {
 		this.cached = { version: entry.v, lines: parseLease(entry.d.content) };
 	}
 
+	/** True when a lease note exists in the account, i.e. some device syncs with the shared-vault setting. Fetches it once when unknown. */
+	async exists(): Promise<boolean> {
+		if (!this.cached) await this.refresh();
+		return (this.cached as { version: number }).version > 0;
+	}
+
 	/** The next decision takes the lease over even if another device holds it. */
 	requestTakeover(): void {
 		this.forceNext = true;

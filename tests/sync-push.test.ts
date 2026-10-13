@@ -649,6 +649,19 @@ describe('iCloud for Windows conflict names', () => {
 		expect(h.vault.has('F/Note(1).md')).toBe(true);
 	});
 
+	it('a file renamed to "Note 2.md" (iCloud on macOS) keeps its title too', async () => {
+		const h = await synced();
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note\nline one\nline two');
+		expect(h.server.version('a')).toBe(1);
+		expect(logText(h)).toContain('named like a sync conflict copy');
+		// a real rename still changes the title
+		await h.vault.rename('F/Note 2.md', 'F/Note renamed.md');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note renamed\nline one\nline two');
+	});
+
 	it('with Note.md and Note(1).md carrying one id, Note.md is the keeper', async () => {
 		const h = await synced();
 		h.vault.put('F/Note(1).md', h.vault.get('F/Note.md') as string);
