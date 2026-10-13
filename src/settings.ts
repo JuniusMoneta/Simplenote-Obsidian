@@ -34,7 +34,7 @@ export const DEFAULT_SETTINGS: SimplenoteSyncSettings = {
 	translateLinks: false,
 	hideProperties: true,
 	tagStyle: 'inline',
-	sharedVault: false,
+	sharedVault: true,
 	appId: DEFAULT_APP_ID,
 	apiKey: DEFAULT_API_KEY,
 };
@@ -172,7 +172,7 @@ export class SimplenoteSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Shared vault: one device syncs at a time')
 			.setDesc(
-				`Turn on when iCloud or Obsidian Sync shares this vault between devices that all run this plugin. One device holds a sync lease and syncs the vault in both directions; the others stand by and change nothing, and the vault sync carries the holder's writes to them. The lease moves by itself when the holder stops syncing for 3 minutes. Now: ${this.plugin.leaseInfo()}.`,
+				`On by default. Keep it on when iCloud or Obsidian Sync shares this vault between devices that all run this plugin; turn it off only if each device has its own separate vault. One device holds a sync lease and syncs the vault in both directions; the others stand by and change nothing, and the vault sync carries the holder's writes to them. The lease moves by itself when the holder stops syncing for 3 minutes. Now: ${this.plugin.leaseInfo()}.`,
 			)
 			.addToggle((t) =>
 				t.setValue(s.sharedVault).onChange(async (v) => {

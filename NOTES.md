@@ -247,6 +247,8 @@ channel every device reaches within seconds, the Simplenote account itself (`src
   next index fetch shows one line winning and the other device goes pull-only.
 
 Rejected: a lock file in the vault (iCloud lag of minutes), a separate helper plugin (devices have no
-channel but iCloud and Simplenote), making the lease the default (with independent vaults a pull-only
-device could never push its own edits; the setting must be opt-in).
+channel but iCloud and Simplenote). Making the lease the default was rejected at first (with independent
+vaults a standby device could never push its own edits); since 0.4.8 it is the default anyway, at the owner's
+request, because every known installation shares one vault and a device whose settings did not sync was the
+cause of the 0.4.7 incident. Owners with separate vaults per device turn it off.
 

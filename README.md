@@ -88,8 +88,9 @@ Dry-run mode shows the same dialog and changes nothing.
   text equals the kept file or the note on Simplenote, and trashes a duplicate note on Simplenote when a
   copy carries a second id. Copies whose text differs are left alone and listed in the sync log.
 - Device-local state (cursor, versions) is kept in local storage, so every device syncs independently.
-- **Shared vault (iCloud, Obsidian Sync) with the plugin on several devices:** turn on the setting
-  "Shared vault: one device syncs at a time". One device holds a *sync lease* and syncs the vault in both
+- **Shared vault (iCloud, Obsidian Sync) with the plugin on several devices:** the setting
+  "Shared vault: one device syncs at a time" is on by default (since 0.4.8); turn it off only when every device has
+  its own separate vault, because a standby device writes nothing. One device holds a *sync lease* and syncs the vault in both
   directions; the others stand by and change nothing (they only keep their records up to date), and the vault
   sync carries the holder's writes to them. Their edits reach Simplenote through the holder, via the vault sync.
   Without the lease, every edit is pushed once per device, and the intermediate snapshots the vault sync delivers
