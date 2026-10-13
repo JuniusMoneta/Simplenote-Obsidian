@@ -82,6 +82,8 @@ Dry-run mode shows the same dialog and changes nothing.
   in a sync again.
 - A new file is linked to a note with identical content that another device created meanwhile (the vault
   sync had not delivered the id yet), instead of getting a second note.
+- A note whose file is missing is not recreated as `Title (2).md` while a file named `Title.md` exists but
+  cannot be read yet (the vault sync is still downloading it); the change waits for that file.
 - **Clean up duplicate copies of notes** moves `Title (2).md`-style copies to the Obsidian trash when their
   text equals the kept file or the note on Simplenote, and trashes a duplicate note on Simplenote when a
   copy carries a second id. Copies whose text differs are left alone and listed in the sync log.

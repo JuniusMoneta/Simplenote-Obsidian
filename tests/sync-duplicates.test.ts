@@ -63,6 +63,33 @@ describe('a remote change never creates a second file for a note whose file exis
 		expect(h.server.notes.size).toBe(2);
 	});
 
+	it('the recorded file is gone and an unreadable file has the note\'s name: wait, never create "Note (2).md"', async () => {
+		const h = await makeHarness();
+		seed(h, 'a', 'Note\nline one', ['obsidian:F']);
+		await h.engine.sync();
+		// iCloud for Windows renamed the file; the state follows the rename
+		await h.vault.rename('F/Note.md', 'F/Note(1).md');
+		await h.engine.sync();
+		expect(h.store.load().notes.a?.path).toBe('F/Note(1).md');
+		// another device cleaned up: the vault sync removes Note(1).md and delivers Note.md, not downloaded yet
+		h.vault.remove('F/Note(1).md');
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\n---\nline one', 5);
+		h.vault.unreadable.add('f/note.md');
+		seed(h, 'a', 'Note\nline one\nedited on the web', ['obsidian:F']);
+		await h.engine.sync();
+		expect(h.vault.paths()).toEqual(['F/Note.md']);
+		expect(h.store.load().pendingRemote).toHaveProperty('a');
+		expect(logText(h)).toContain('cannot be read yet');
+		await h.engine.sync();
+		expect(h.vault.paths()).toEqual(['F/Note.md']);
+		// the download finishes: the edit lands in the one file
+		h.vault.unreadable.clear();
+		await h.engine.sync();
+		expect(h.vault.paths()).toEqual(['F/Note.md']);
+		expect(h.vault.get('F/Note.md')).toContain('edited on the web');
+		expect(h.store.load().notes.a?.path).toBe('F/Note.md');
+	});
+
 	it('file in an excluded folder on a device that never synced it', async () => {
 		const h = await makeHarness({ settings: { excludedFolders: ['Private'] } });
 		seed(h, 'p', 'Secret\nbody', ['obsidian:Private']);

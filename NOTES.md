@@ -198,6 +198,12 @@ Within fifteen minutes:
 5. **Vanished files trashed on Simplenote.** While iCloud renamed folders, nine files were missing for more
    than 60 seconds; the holder trashed their notes, and the other device then moved the files to the trash.
    Rule: on a shared vault the wait is 10 minutes (`SHARED_VAULT_VANISH_WAIT_MS`).
+6. **`Title (2).md` during the repair (0.4.6).** While the Windows copy was being cleaned (conflict copies
+   removed, titles reverted on Simplenote), the phone still ran the plugin. Its recorded path for a note was
+   the removed `Title(1).md`; the cleaned `Title.md` had arrived through iCloud but was not downloaded yet, so
+   it was unreadable and carried no readable id. The planner saw "file gone, note changed", found `Title.md`
+   taken, and created `Title (2).md`. Rule: when the file a note would get exists but is unreadable, the note
+   waits in `pendingRemote` instead (`scan.unreadable`), for notes with and without state.
 
 Repair was done by hand on the Windows copy of the vault (duplicates compared body by body, the newest
 body kept, the stored `simplenote-title` kept, copies moved to `.trash/repair-20261012`), the nine notes

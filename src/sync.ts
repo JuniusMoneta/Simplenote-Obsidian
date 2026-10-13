@@ -150,6 +150,8 @@ interface Scan {
 	byId: Map<string, LocalFile>;
 	/** Ids carried by excluded or blocked files: present locally, but not synced. */
 	presentIds: Set<string>;
+	/** Name keys of files that exist but could not be read this sync (vault-sync placeholders). */
+	unreadable: Set<string>;
 	noId: LocalFile[];
 	excluded: LocalFile[];
 	pathKeys: Set<string>;
@@ -500,6 +502,7 @@ export class SyncEngine {
 		const idFiles = new Map<string, LocalFile[]>();
 		const paused = new Set(this.state.pausedPaths.map(nameKey));
 		const presentIds = new Set<string>();
+		const unreadable = new Set<string>();
 		// Records the id of a file that exists but will not take part in this sync, so that the plan
 		// never creates a second file for its note.
 		const noteId = async (path: string): Promise<void> => {
@@ -570,6 +573,7 @@ export class SyncEngine {
 			} else {
 				const ok = await this.loadLocal(lf);
 				if (!ok) {
+					unreadable.add(nameKey(info.path));
 					await noteId(info.path);
 					continue;
 				}
@@ -606,7 +610,7 @@ export class SyncEngine {
 		for (const p of Object.keys(this.state.problems)) if (!pathKeys.has(nameKey(p))) delete this.state.problems[p];
 		if (excluded.length > 0) this.log.info(`${excluded.length} file(s) excluded from sync (command "List excluded files" shows them)`);
 		const noId = files.filter((f) => f.id === null);
-		return { files: files.filter((f) => f.id === null || byId.get(f.id) === f), byId, presentIds, noId, excluded, pathKeys, folders: this.vault.listFolders().filter((f) => canonicalFolder.get(nameKey(f)) === f) };
+		return { files: files.filter((f) => f.id === null || byId.get(f.id) === f), byId, presentIds, unreadable, noId, excluded, pathKeys, folders: this.vault.listFolders().filter((f) => canonicalFolder.get(nameKey(f)) === f) };
 	}
 
 	private pickKeeper(id: string, list: LocalFile[]): LocalFile {
@@ -768,6 +772,7 @@ export class SyncEngine {
 		const handled = new Set<string>();
 		const remoteIds = new Set<string>();
 		const taken = new Set(scan.pathKeys);
+		const waitingOnUnreadable = new Set<string>();
 		const folders = [...scan.folders];
 		const ctx = { taken, folders };
 		/** Files without an id already linked to a remote twin in this plan. */
@@ -837,6 +842,19 @@ export class SyncEngine {
 						this.state.pendingRemote[id] = now;
 						this.log.info(`${st?.path ?? id} changed on Simplenote but its file cannot sync right now; the change is applied when the file is available again`);
 					}
+					handled.add(id);
+					continue;
+				}
+				// The file the note would get already exists but cannot be read (a vault-sync placeholder that is
+				// still downloading, typically after another device renamed or cleaned up). Creating "Title (2).md"
+				// now would leave two files for one note once the download finishes; wait instead.
+				const wantedPath = this.pickPath(this.targetFolder(data, ctx), splitContent(data.content).title, { taken: new Set() });
+				if (scan.unreadable.has(nameKey(wantedPath))) {
+					if (this.state.pendingRemote[id] === undefined) {
+						this.state.pendingRemote[id] = now;
+						this.log.info(`${wantedPath} exists but cannot be read yet (vault sync still downloading it?); not creating a copy for the note`);
+					}
+					waitingOnUnreadable.add(id);
 					handled.add(id);
 					continue;
 				}
@@ -975,7 +993,7 @@ export class SyncEngine {
 			}
 			actions.push(this.trashRemoteAction(st));
 		}
-		for (const id of Object.keys(this.state.pendingRemote)) if (!this.state.notes[id] && !scan.presentIds.has(id)) delete this.state.pendingRemote[id];
+		for (const id of Object.keys(this.state.pendingRemote)) if (!this.state.notes[id] && !scan.presentIds.has(id) && !waitingOnUnreadable.has(id)) delete this.state.pendingRemote[id];
 		return actions;
 	}
 

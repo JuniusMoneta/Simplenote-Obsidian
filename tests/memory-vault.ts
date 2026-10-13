@@ -108,6 +108,7 @@ export class MemoryVault implements VaultAdapter {
 		return Promise.resolve(f.text);
 	}
 	async readFrontmatter(path: string): Promise<Record<string, unknown> | null> {
+		if (this.unreadable.has(key(path))) return null;
 		const f = this.files.get(key(path));
 		if (!f) return null;
 		const fm = splitFrontmatter(f.text);
