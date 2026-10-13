@@ -5,7 +5,7 @@ Obsidian is the home of the notes. Simplenote is a web window onto the whole vau
 where Obsidian cannot be installed.
 
 - One `.md` file = one Simplenote note. The file name is the note title (first line on Simplenote).
-- Folders map to Simplenote tags that start with `obsidian:` (`Projects/Client Work/Plan.md` → `obsidian:Projects/Client_Work`).
+- Folders map to Simplenote tags that start with `obsidian:` (`Projects/Client Work/Plan.md` → `obsidian:Projects/Client_Work`; a real `_` is written `%5F`). Use version 0.4.4 or later on every device.
 - Other Simplenote tags become a hashtag line at the end of the note. A pinned note is a bookmark in Obsidian's core Bookmarks list, and bookmarking a note pins it on Simplenote.
 - Works on macOS, Windows, and iOS. The plugin runs on every device; whichever device has Obsidian open syncs.
 - Images and attachments are not uploaded. Notes that embed them sync as text.

@@ -1,6 +1,6 @@
 {
 	"name": "simplenote-sync",
-	"version": "0.4.3",
+	"version": "0.4.4",
 	"description": "Two-way sync between an Obsidian vault and a Simplenote account",
 	"main": "main.js",
 	"type": "module",

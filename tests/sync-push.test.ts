@@ -606,3 +606,111 @@ describe('case-only folder rename', () => {
 		expect(h.server.get('a')?.tags).toContain('obsidian:Reading');
 	});
 });
+
+describe('underscores in folder names (0.4.4 tag format)', () => {
+	it('rewrites the old tag of a folder with a real underscore once, and leaves "my folder" alone', async () => {
+		const h = await makeHarness();
+		h.vault.put('my_folder/Note 0.md', '---\nsimplenote-id: u0\n---\nbody');
+		seed(h, 'u0', 'Note 0\nbody', ['obsidian:my_folder', 'todo']);
+		seed(h, 's', 'Spaced\nbody', ['obsidian:my_folder']);
+		await h.engine.sync();
+		// "s" is a new note: decoded with the old rule it lands in the existing my_folder too
+		expect(h.vault.paths()).toEqual(['my_folder/Note 0.md', 'my_folder/Spaced.md']);
+		const r = await h.engine.sync();
+		expect(r.pushed).toBe(2);
+		expect(h.server.get('u0')?.tags).toEqual(['todo', 'obsidian:my%5Ffolder']);
+		expect(h.server.get('u0')?.content).toBe('Note 0\nbody');
+		const again = await h.engine.sync();
+		expect(again.pulled + again.pushed + again.trashed).toBe(0);
+		expect(h.vault.paths()).toEqual(['my_folder/Note 0.md', 'my_folder/Spaced.md']);
+	});
+
+	it('a space folder keeps its tag', async () => {
+		const h = await makeHarness();
+		seed(h, 'a', 'Note\nbody', ['obsidian:my_folder']);
+		await h.engine.sync();
+		expect(h.vault.has('my folder/Note.md')).toBe(true);
+		const r = await h.engine.sync();
+		expect(r.pushed).toBe(0);
+		expect(h.server.get('a')?.tags).toEqual(['obsidian:my_folder']);
+	});
+
+	it('new notes in an underscore folder get the new tag, and a new device puts them back in that folder', async () => {
+		const h = await makeHarness();
+		h.vault.put('my_folder/New.md', 'hello');
+		h.advance(NEW_FILE_WAIT_MS + 1);
+		await h.engine.sync();
+		await h.engine.sync();
+		const note = [...h.server.notes.values()][0];
+		expect(note?.data?.tags).toEqual(['obsidian:my%5Ffolder']);
+		const other = await makeHarness({ server: h.server });
+		await other.engine.sync();
+		expect(other.vault.paths()).toEqual(['my_folder/New.md']);
+		const r = await other.engine.sync();
+		expect(r.pushed).toBe(0);
+	});
+
+	it('a large underscore folder counts as one change for the mass-change guard', async () => {
+		const h = await makeHarness();
+		for (let i = 0; i < 60; i++) {
+			h.vault.put(`my_folder/Note ${i}.md`, `---\nsimplenote-id: n${i}\n---\nbody`);
+			seed(h, `n${i}`, `Note ${i}\nbody`, ['obsidian:my_folder']);
+		}
+		await h.engine.sync();
+		const r = await h.engine.sync();
+		expect(h.confirmations).toHaveLength(0);
+		expect(r.pushed).toBe(60);
+		expect([...h.server.notes.values()].every((n) => n.data?.tags.includes('obsidian:my%5Ffolder'))).toBe(true);
+	});
+
+	it('a second updated device does not fight over the tag', async () => {
+		const h = await makeHarness();
+		h.vault.put('my_folder/Note.md', '---\nsimplenote-id: a\n---\nbody');
+		seed(h, 'a', 'Note\nbody', ['obsidian:my_folder']);
+		const other = await makeHarness({ server: h.server });
+		other.vault.put('my_folder/Note.md', '---\nsimplenote-id: a\n---\nbody');
+		await h.engine.sync();
+		await other.engine.sync();
+		await h.engine.sync();
+		await other.engine.sync();
+		const v = h.server.get('a');
+		expect(v?.tags).toEqual(['obsidian:my%5Ffolder']);
+		const r1 = await h.engine.sync();
+		const r2 = await other.engine.sync();
+		expect(r1.pulled + r1.pushed + r2.pulled + r2.pushed).toBe(0);
+		expect(other.vault.paths()).toEqual(['my_folder/Note.md']);
+	});
+});
+
+describe('folders that differ only by case', () => {
+	it('an empty leftover folder never wins: the folder with notes keeps syncing', async () => {
+		const h = await makeHarness();
+		seed(h, 'a', 'Note\nbody', ['obsidian:Work']);
+		await h.engine.sync();
+		// rename Work -> work, but the empty "Work" folder stays behind
+		await h.vault.rename('Work/Note.md', 'work/Note.md');
+		await h.engine.sync();
+		h.vault.put('work/Note.md', `${h.vault.get('work/Note.md') ?? ''}\nedit`);
+		seed(h, 'b', 'Remote new\nbody', ['obsidian:Work']);
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note\nbody\nedit');
+		expect(h.server.get('a')?.tags).toEqual(['obsidian:work']);
+		expect(h.vault.paths()).toEqual(['work/Note.md', 'work/Remote new.md']);
+		expect(logText(h)).not.toContain('differs only by case');
+		expect(h.notices.join('\n')).not.toContain('capital letters');
+	});
+
+	it('two folders with notes: the owner gets one notice per session', async () => {
+		const h = await makeHarness();
+		h.vault.put('Reading/A.md', 'a');
+		h.vault.put('reading/B.md', 'b');
+		await h.engine.sync();
+		h.advance(NEW_FILE_WAIT_MS + 1);
+		await h.engine.sync();
+		await h.engine.sync();
+		const notices = h.notices.filter((n) => n.includes('capital letters'));
+		expect(notices).toHaveLength(1);
+		expect(notices[0]).toContain('"Reading" and "reading"');
+		expect(h.vault.get('reading/B.md')).toBe('b');
+	});
+});
