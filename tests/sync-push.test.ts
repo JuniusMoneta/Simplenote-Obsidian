@@ -51,6 +51,50 @@ describe('push edits (M3)', () => {
 		expect(logText(h)).toContain('merging locally');
 	});
 
+	it('merges without a base when the server no longer has the base version (HTTP 404)', async () => {
+		const h = await synced({ fake: { keepVersions: 2 } });
+		h.server.seed('a', { content: 'Note\nline one\nline two edited at work', tags: ['obsidian:F', 'todo', 'work'] });
+		h.server.seed('a', { content: 'Note\nline one\nline two edited at work\nline three from work', tags: ['obsidian:F', 'todo', 'work'] });
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited here\nline two');
+		const r = await h.engine.sync();
+		expect(r.ok).toBe(true);
+		expect(r.errors).toEqual([]);
+		// no text is lost: where the sides differ, this device's lines come first, then Simplenote's
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited here\nline two\nline one\nline two edited at work\nline three from work');
+		expect(h.server.get('a')?.tags).toEqual(['todo', 'obsidian:F', 'work']);
+		expect(h.vault.get('F/Note.md')).toContain('line three from work');
+		expect(h.store.load().notes.a?.version).toBe(h.server.version('a'));
+		expect(logText(h)).toContain('no longer has v1');
+		expect(h.engine.problems()).toHaveLength(0);
+	});
+
+	it('merges without a base when this device is ahead of the server (HTTP 404)', async () => {
+		const h = await synced();
+		const s = h.store.load();
+		(s.notes.a as { version: number }).version = 9;
+		h.store.save(s);
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one\nline two\nadded here');
+		const r = await h.engine.sync();
+		expect(r.errors).toEqual([]);
+		expect(h.server.get('a')?.content).toBe('Note\nline one\nline two\nadded here');
+	});
+
+	it('a push that keeps failing is retried on a full reconcile', async () => {
+		const h = await synced();
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited');
+		h.server.failPosts = 400;
+		for (let i = 0; i < 3; i++) await h.engine.sync();
+		expect(h.engine.problems().map((p) => p.path)).toEqual(['F/Note.md']);
+		h.server.failPosts = null;
+		const posts = h.server.requests.filter((q) => q.method === 'POST').length;
+		await h.engine.sync();
+		expect(h.server.requests.filter((q) => q.method === 'POST').length).toBe(posts); // blocked while unchanged
+		const r = await h.engine.sync({ full: true });
+		expect(r.errors).toEqual([]);
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited');
+		expect(h.engine.problems()).toHaveLength(0);
+	});
+
 	it('pull before push: an edit that already arrived from another device is not pushed again', async () => {
 		const h = await synced();
 		// another device pushed exactly this content already

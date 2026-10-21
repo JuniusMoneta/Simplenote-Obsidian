@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyChanges, mergeStrings } from '../src/merge';
+import { applyChanges, mergeStrings, mergeWithoutBase } from '../src/merge';
 
 describe('mergeStrings', () => {
 	it('returns the other side when one side is unchanged', () => {
@@ -60,5 +60,13 @@ describe('applyChanges (server-style patch application)', () => {
 	it('applies deletions and insertions at the start', () => {
 		expect(applyChanges('a\nb\nc', 'a\nb\nc\nd', 'x\nb\nc')).toBe('x\nb\nc\nd');
 		expect(applyChanges('a\nb\nc', 'a\nb\nc', 'a\nc')).toBe('a\nc');
+	});
+});
+
+describe('mergeWithoutBase', () => {
+	it('keeps shared lines once and every other line of both sides', () => {
+		expect(mergeWithoutBase('a\nb\nc', 'a\nb\nc')).toBe('a\nb\nc');
+		expect(mergeWithoutBase('a\nb\nc', 'a\nc\nd')).toBe('a\nb\nc\nd');
+		expect(mergeWithoutBase('a\nmine\nc', 'a\ntheirs\nc')).toBe('a\nmine\ntheirs\nc');
 	});
 });

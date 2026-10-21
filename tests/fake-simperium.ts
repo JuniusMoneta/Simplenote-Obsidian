@@ -21,6 +21,8 @@ export interface FakeOptions {
 	maxContentBytes?: number;
 	/** Case-fold tags like Simplenote (keeps the first spelling). */
 	caseInsensitiveTags?: boolean;
+	/** Keep only the newest N versions of each note (0 = all). Older ones answer 404 on GET and POST, like the live server (2026-10-21). */
+	keepVersions?: number;
 }
 
 /** In-memory Simperium: versions, since cursors, mark pagination, ccid dedupe, merge on stale base. */
@@ -33,6 +35,8 @@ export class FakeSimperium {
 	readonly loginCodes = new Map<string, string>();
 	cv = 0;
 	failNext: { status: number; count: number } | null = null;
+	/** When set, every note POST answers this status. */
+	failPosts: number | null = null;
 	readonly opts: Required<FakeOptions>;
 
 	constructor(opts: FakeOptions = {}) {
@@ -44,6 +48,7 @@ export class FakeSimperium {
 			beforeRequest: opts.beforeRequest ?? (() => undefined),
 			maxContentBytes: opts.maxContentBytes ?? 1_000_000,
 			caseInsensitiveTags: opts.caseInsensitiveTags ?? true,
+			keepVersions: opts.keepVersions ?? 0,
 		};
 	}
 
@@ -180,10 +185,15 @@ export class FakeSimperium {
 		return { status: 200, headers: { 'content-type': 'application/json' }, text: JSON.stringify(out) };
 	}
 
+	private pruned(n: StoredNote, version: number): boolean {
+		return this.opts.keepVersions > 0 && version <= n.version - this.opts.keepVersions;
+	}
+
 	private handleGet(id: string, version: number | undefined): HttpResponse {
 		const n = this.notes.get(id);
 		if (!n) return { status: 404, headers: {}, text: '' };
 		if (version !== undefined) {
+			if (this.pruned(n, version)) return { status: 404, headers: {}, text: '' };
 			const d = n.history.get(version);
 			if (!d) return { status: 404, headers: {}, text: '' };
 			return { status: 200, headers: { 'X-Simperium-Version': String(version) }, text: JSON.stringify(d) };
@@ -193,6 +203,7 @@ export class FakeSimperium {
 	}
 
 	private handlePost(id: string, baseVersion: number | undefined, u: URL, body: string): HttpResponse {
+		if (this.failPosts !== null) return { status: this.failPosts, headers: {}, text: 'injected failure' };
 		let patch: Partial<NoteData>;
 		try {
 			patch = JSON.parse(body) as Partial<NoteData>;
@@ -230,7 +241,7 @@ export class FakeSimperium {
 			next = { ...current, ...patch };
 		}
 		if (existing && current && baseVersion !== undefined && baseVersion !== existing.version) {
-			if (baseVersion > existing.version) return { status: 404, headers: {}, text: 'no such version' };
+			if (baseVersion > existing.version || this.pruned(existing, baseVersion)) return { status: 404, headers: {}, text: 'no such version' };
 			if (this.opts.staleVersion !== 'merge') {
 				return { status: this.opts.staleVersion, headers: { 'X-Simperium-Version': String(existing.version) }, text: 'stale version' };
 			}

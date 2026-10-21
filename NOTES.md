@@ -80,6 +80,23 @@ If the server refuses (405/409/440), the plugin fetches the base version from `/
 (`src/merge.ts`: line-level diff3, character-level inside conflicting regions, never drops text) and
 posts again against the current version.
 
+### Unknown base version (0.4.9)
+
+Seen live on 2026-10-21: three notes edited on another device failed every push with
+`HTTP 404 on POST .../i/{id}/v/{base}` while the note itself existed (other stale-base pushes in the same
+sync merged fine). The server answers 404 when it does not have the base version: either it no longer
+keeps that old version, or this device's version is ahead of the server's. Which of the two it was is not
+confirmed. Before 0.4.9 the 404 was a hard error, so the push was repeated unchanged forever.
+
+0.4.9 treats a 404 on a POST with a base version as a conflict (when the note exists). The local merge then
+asks for the base; when that GET also answers 404, `mergeWithoutBase` keeps the lines both sides share
+once and every other line of both sides (this device's first). Deleted lines can come back and lines both
+sides edited appear twice, but no text is lost. Tags: the union of both sides. The log says
+"Simplenote no longer has vN; merged without a base".
+
+Also in 0.4.9: a file blocked after three failed pushes is retried on every full reconcile, as the
+problem message always said. Before, only a change to the file retried it.
+
 ## Live check results (`npm run itest`, 2026-10-12, dedicated test account)
 
 - **Server-side merge: confirmed.** A POST to `/v/1` while the server was at v2 answered HTTP 200 with

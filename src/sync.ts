@@ -5,7 +5,7 @@
 import { joinFrontmatter, setKeys, splitFrontmatter } from './frontmatter';
 import { computeCcid, newNoteId, noteHash } from './hash';
 import { Logger } from './log';
-import { mergeStrings } from './merge';
+import { mergeStrings, mergeWithoutBase } from './merge';
 import {
 	basenameMatchesTitle,
 	basenameOfPath,
@@ -283,11 +283,11 @@ export class SyncEngine {
 		}
 	}
 
-	/** True when the file has not changed since its problem was recorded (no point retrying). */
-	private stillBlocked(path: string, info: FileInfo): boolean {
+	/** True when the file has not changed since its problem was recorded (no point retrying). A full reconcile retries errors. */
+	private stillBlocked(path: string, info: FileInfo, full: boolean): boolean {
 		const p = this.state.problems[path];
 		if (!p) return false;
-		if (p.kind === 'error' && p.count < 3) return false;
+		if (p.kind === 'error' && (p.count < 3 || full)) return false;
 		if (p.kind === 'too-large' && p.source === 'setting') return false; // the limit may have changed: re-evaluated by the scan
 		return p.size === info.size && p.mtime === info.mtime;
 	}
@@ -353,7 +353,7 @@ export class SyncEngine {
 			this.sharedVault = shared;
 			const lease = shared && !this.dryRun ? this.deps.lease : undefined;
 			await this.migratePinnedProperty();
-			let scan = await this.scanLocal(settings);
+			let scan = await this.scanLocal(settings, full);
 			let preConfirmed = false;
 			if (!this.state.firstRunDone) {
 				if (!full) {
@@ -369,7 +369,7 @@ export class SyncEngine {
 					return { ...result, skipped: 'first-run-cancelled' };
 				}
 				preConfirmed = true;
-				scan = await this.scanLocal(settings);
+				scan = await this.scanLocal(settings, full);
 			}
 			let actions = await this.plan(fetched.entries, scan, full, now);
 			if (lease) {
@@ -509,7 +509,7 @@ export class SyncEngine {
 
 	// ---------------- scanning ----------------
 
-	private async scanLocal(settings: EngineSettings): Promise<Scan> {
+	private async scanLocal(settings: EngineSettings, full: boolean): Promise<Scan> {
 		const byPath = new Map<string, NoteState>();
 		for (const n of Object.values(this.state.notes)) byPath.set(nameKey(n.path), n);
 		const files: LocalFile[] = [];
@@ -577,7 +577,7 @@ export class SyncEngine {
 				await noteId(info.path);
 				continue;
 			}
-			if (this.stillBlocked(info.path, info)) {
+			if (this.stillBlocked(info.path, info, full)) {
 				await noteId(info.path);
 				continue;
 			}
@@ -1480,9 +1480,18 @@ export class SyncEngine {
 		if (res.outcome === 'conflict') {
 			this.log.warn(`${lf.info.path}: server refused base v${baseVersion} (current v${res.version}); merging locally`);
 			const base = await this.client.getNote(id, baseVersion);
-			const baseContent = base?.data.content ?? res.data.content;
-			const merged = mergeStrings(baseContent, content, res.data.content);
-			const mergedTags = mergeTags(base?.data.tags ?? res.data.tags, tags, res.data.tags);
+			let merged: string;
+			let mergedTags: string[];
+			if (base) {
+				merged = mergeStrings(base.data.content, content, res.data.content);
+				mergedTags = mergeTags(base.data.tags, tags, res.data.tags);
+			} else {
+				// The base is gone (or this device's version is ahead of the server): keep both sides.
+				this.log.warn(`${lf.info.path}: Simplenote no longer has v${baseVersion}; merged without a base, so text from both sides is kept. Check the note for doubled lines`);
+				merged = mergeWithoutBase(content, res.data.content);
+				const remoteKeys = new Set(res.data.tags.map(nameKey));
+				mergedTags = mergeTags(tags.filter((t) => remoteKeys.has(nameKey(t))), tags, res.data.tags);
+			}
 			const mergedHash = await noteHash(merged, mergedTags.map(tagKey), pinned);
 			res = await this.client.postNote(
 				id,

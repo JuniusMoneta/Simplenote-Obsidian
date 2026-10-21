@@ -299,6 +299,8 @@ export class SimperiumClient {
 	 * Creates or updates a note. Without replace, only the fields sent are updated.
 	 * 412 (no change) is reported as `unchanged`. 405/409/440 are reported as `conflict`
 	 * together with the current server note, so the caller can merge locally and retry.
+	 * A 404 against a base version whose note still exists is a conflict too: the server
+	 * does not have that version (NOTES.md, "Unknown base version").
 	 */
 	async postNote(
 		id: string,
@@ -313,7 +315,7 @@ export class SimperiumClient {
 		url += `?${q.join('&')}`;
 		const res = await this.send(
 			{ url, method: 'POST', headers: { ...this.authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(data) },
-			[200, 405, 409, 412, 440],
+			opts.baseVersion !== undefined ? [200, 404, 405, 409, 412, 440] : [200, 405, 409, 412, 440],
 		);
 		if (res.status === 200 && res.text.trim().length > 0) {
 			return { data: normalizeNoteData(JSON.parse(res.text) as Partial<NoteData>), version: versionFromHeaders(res.headers), outcome: 'updated' };
@@ -321,7 +323,8 @@ export class SimperiumClient {
 		const current = await this.getNote(id);
 		if (!current) throw new SimperiumError(`Note ${id} vanished after POST (HTTP ${res.status})`, res.status, res.text);
 		if (res.status === 200 || res.status === 412) return { ...current, outcome: 'unchanged' };
-		this.log(`HTTP ${res.status} on POST ${id}: treating as conflict`);
+		if (res.status === 404) this.log(`HTTP 404 on POST ${id}: the server does not have base v${opts.baseVersion} (current v${current.version}); treating as conflict`);
+		else this.log(`HTTP ${res.status} on POST ${id}: treating as conflict`);
 		return { ...current, outcome: 'conflict' };
 	}
 }
