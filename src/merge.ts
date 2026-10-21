@@ -111,20 +111,6 @@ export function mergeStrings(base: string, a: string, b: string): string {
 	return diff3(base.split('\n'), a.split('\n'), b.split('\n'), lineConflict).join('\n');
 }
 
-/**
- * Merge for when the common base is unknown (the server no longer has it). Lines both sides
- * share are kept once; every other line of both sides is kept, ours first where both differ.
- * Deletions on either side come back, but no text is lost.
- */
-export function mergeWithoutBase(a: string, b: string): string {
-	if (a === b) return a;
-	const al = a.split('\n');
-	const bl = b.split('\n');
-	const m = lcsMatch(al, bl);
-	const common = al.filter((_, i) => m[i] !== -1);
-	return diff3(common, al, bl, keepBoth).join('\n');
-}
-
 /** Line-based similarity 0..1 (2 * LCS / (len a + len b)). */
 export function similarity(a: string, b: string): number {
 	if (a === b) return 1;

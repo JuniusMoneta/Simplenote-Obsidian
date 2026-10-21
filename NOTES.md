@@ -89,10 +89,13 @@ keeps that old version, or this device's version is ahead of the server's. Which
 confirmed. Before 0.4.9 the 404 was a hard error, so the push was repeated unchanged forever.
 
 0.4.9 treats a 404 on a POST with a base version as a conflict (when the note exists). The local merge then
-asks for the base; when that GET also answers 404, `mergeWithoutBase` keeps the lines both sides share
-once and every other line of both sides (this device's first). Deleted lines can come back and lines both
-sides edited appear twice, but no text is lost. Tags: the union of both sides. The log says
-"Simplenote no longer has vN; merged without a base".
+asks for the base. When that GET also answers 404 there is nothing to merge against, so the newer side wins
+as a whole (file mtime against the note's `modificationDate`, the same comparison the planner uses for notes
+without state). A newer note is written to the file; a newer file is pushed against the current version.
+The other side's text is not lost: the old note text stays in the note's Simplenote history, the old file
+text in Obsidian's File recovery. The log says "Simplenote no longer has vN; the ... is newer and replaces ...".
+A line-union merge (keep every line of both sides) was tried first and rejected by the owner: it doubles
+every line that both sides edited.
 
 Also in 0.4.9: a file blocked after three failed pushes is retried on every full reconcile, as the
 problem message always said. Before, only a change to the file retried it.

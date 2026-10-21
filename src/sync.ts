@@ -5,7 +5,7 @@
 import { joinFrontmatter, setKeys, splitFrontmatter } from './frontmatter';
 import { computeCcid, newNoteId, noteHash } from './hash';
 import { Logger } from './log';
-import { mergeStrings, mergeWithoutBase } from './merge';
+import { mergeStrings } from './merge';
 import {
 	basenameMatchesTitle,
 	basenameOfPath,
@@ -1486,11 +1486,16 @@ export class SyncEngine {
 				merged = mergeStrings(base.data.content, content, res.data.content);
 				mergedTags = mergeTags(base.data.tags, tags, res.data.tags);
 			} else {
-				// The base is gone (or this device's version is ahead of the server): keep both sides.
-				this.log.warn(`${lf.info.path}: Simplenote no longer has v${baseVersion}; merged without a base, so text from both sides is kept. Check the note for doubled lines`);
-				merged = mergeWithoutBase(content, res.data.content);
-				const remoteKeys = new Set(res.data.tags.map(nameKey));
-				mergedTags = mergeTags(tags.filter((t) => remoteKeys.has(nameKey(t))), tags, res.data.tags);
+				// The base is gone (or this device's version is ahead of the server): nothing to merge against,
+				// so the newer side wins as a whole.
+				if (res.data.modificationDate * 1000 > lf.info.mtime) {
+					this.log.warn(`${lf.info.path}: Simplenote no longer has v${baseVersion}; the note on Simplenote is newer and replaces the file (the file's previous text is in Obsidian's File recovery)`);
+					await this.writeLocal(lf.info.path, id, res.data, res.version, { taken: new Set(), folders: this.vault.listFolders() });
+					return;
+				}
+				this.log.warn(`${lf.info.path}: Simplenote no longer has v${baseVersion}; the file is newer and replaces the note on Simplenote (its previous text is in the note's history)`);
+				merged = content;
+				mergedTags = tags;
 			}
 			const mergedHash = await noteHash(merged, mergedTags.map(tagKey), pinned);
 			res = await this.client.postNote(

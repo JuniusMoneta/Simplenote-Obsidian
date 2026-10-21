@@ -51,29 +51,44 @@ describe('push edits (M3)', () => {
 		expect(logText(h)).toContain('merging locally');
 	});
 
-	it('merges without a base when the server no longer has the base version (HTTP 404)', async () => {
+	it('the server no longer has the base version (HTTP 404): a newer file replaces the note', async () => {
 		const h = await synced({ fake: { keepVersions: 2 } });
-		h.server.seed('a', { content: 'Note\nline one\nline two edited at work', tags: ['obsidian:F', 'todo', 'work'] });
-		h.server.seed('a', { content: 'Note\nline one\nline two edited at work\nline three from work', tags: ['obsidian:F', 'todo', 'work'] });
-		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited here\nline two');
+		h.server.seed('a', { content: 'Note\nline one\nline two edited at work', tags: ['obsidian:F', 'todo'] });
+		h.server.seed('a', { content: 'Note\nline one\nline two edited at work\nline three', tags: ['obsidian:F', 'todo'] });
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited here\nline two edited at work\nline three', h.clock.now);
 		const r = await h.engine.sync();
-		expect(r.ok).toBe(true);
 		expect(r.errors).toEqual([]);
-		// no text is lost: where the sides differ, this device's lines come first, then Simplenote's
-		expect(h.server.get('a')?.content).toBe('Note\nline one edited here\nline two\nline one\nline two edited at work\nline three from work');
-		expect(h.server.get('a')?.tags).toEqual(['todo', 'obsidian:F', 'work']);
-		expect(h.vault.get('F/Note.md')).toContain('line three from work');
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited here\nline two edited at work\nline three');
 		expect(h.store.load().notes.a?.version).toBe(h.server.version('a'));
-		expect(logText(h)).toContain('no longer has v1');
+		expect(logText(h)).toContain('the file is newer and replaces the note');
 		expect(h.engine.problems()).toHaveLength(0);
+		const r2 = await h.engine.sync();
+		expect(r2.pushed + r2.pulled).toBe(0);
 	});
 
-	it('merges without a base when this device is ahead of the server (HTTP 404)', async () => {
+	it('the server no longer has the base version (HTTP 404): a newer note replaces the file', async () => {
+		const h = await synced({ fake: { keepVersions: 2 } });
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nold edit here\nline two', h.clock.now);
+		h.advance(60_000);
+		const later = h.clock.now / 1000;
+		h.server.seed('a', { content: 'Note\nline one\nedited at work', tags: ['obsidian:F', 'todo'], modificationDate: later });
+		h.server.seed('a', { content: 'Note\nline one\nedited at work\nmore', tags: ['obsidian:F', 'todo'], modificationDate: later });
+		const r = await h.engine.sync();
+		expect(r.errors).toEqual([]);
+		expect(h.server.get('a')?.content).toBe('Note\nline one\nedited at work\nmore');
+		expect(h.vault.get('F/Note.md')).toBe('---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one\nedited at work\nmore');
+		expect(h.store.load().notes.a?.version).toBe(h.server.version('a'));
+		expect(logText(h)).toContain('the note on Simplenote is newer and replaces the file');
+		const r2 = await h.engine.sync();
+		expect(r2.pushed + r2.pulled).toBe(0);
+	});
+
+	it('this device is ahead of the server (HTTP 404): the newer side wins', async () => {
 		const h = await synced();
 		const s = h.store.load();
 		(s.notes.a as { version: number }).version = 9;
 		h.store.save(s);
-		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one\nline two\nadded here');
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one\nline two\nadded here', h.clock.now);
 		const r = await h.engine.sync();
 		expect(r.errors).toEqual([]);
 		expect(h.server.get('a')?.content).toBe('Note\nline one\nline two\nadded here');
