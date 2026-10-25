@@ -37,6 +37,8 @@ import type { BookmarkAdapter, FileInfo, VaultAdapter } from './vault';
 
 export const NEW_FILE_WAIT_MS = 2 * 60 * 1000;
 export const SUSPICIOUS_WAIT_MS = 60 * 1000;
+/** How long a delete made in Obsidian is remembered while its note waits to be trashed. */
+export const USER_DELETE_TTL_MS = 10 * 60 * 1000;
 /** On a shared vault the vault sync can hide a file for minutes while it moves folders around; wait longer before trashing its note. */
 export const SHARED_VAULT_VANISH_WAIT_MS = 10 * 60 * 1000;
 export const FULL_RECONCILE_MS = 24 * 60 * 60 * 1000;
@@ -171,6 +173,8 @@ interface Action {
 	moveTo?: string;
 	/** Actions sharing a group count as one change in the mass-change guard. */
 	group?: string;
+	/** Trash of a note whose file the owner deleted in Obsidian on this device: allowed on standby too. */
+	byUser?: boolean;
 	run: () => Promise<void>;
 }
 
@@ -194,6 +198,8 @@ export class SyncEngine {
 	private fullNext = false;
 	/** Paths of files the current plan will create, so link translation can resolve them during the batch. */
 	private planned = new Map<string, string>();
+	/** Files the owner deleted in Obsidian on this device (name key -> when, and the id the file carried), as opposed to files that vanished. */
+	private readonly userDeletes = new Map<string, { at: number; path: string; id?: string }>();
 	/** Folder pairs differing only by case that were already shown in a notice this session. */
 	private caseConflictNoticed = new Set<string>();
 	/** Name of the device holding the push lease while this device pulls only; null when this device pushes. */
@@ -236,6 +242,14 @@ export class SyncEngine {
 		for (const n of Object.values(st.notes)) m.set(n.id, n.path);
 		for (const [id, path] of this.planned) if (!m.has(id)) m.set(id, path);
 		return m;
+	}
+
+	/**
+	 * The owner deleted this file in Obsidian on this device. Its note is trashed on the next sync without the
+	 * vanished-file wait (on standby too), and a copy of the file that comes back later does not restore the note.
+	 */
+	noteDeletedByUser(path: string, id?: string): void {
+		this.userDeletes.set(nameKey(path), { at: this.now(), path, id: id || undefined });
 	}
 
 	pause(reason = 'paused by user'): void {
@@ -380,15 +394,18 @@ export class SyncEngine {
 					// Standby: the holder syncs this vault in both directions and the vault sync carries its writes
 					// here. Only state-keeping actions run; writing pulled notes on two devices at once made
 					// iCloud for Windows rename files to `Note(1).md` and folders to `Folder(1)`.
-					const held = actions.filter((a) => a.kind !== 'adopt');
-					actions = actions.filter((a) => a.kind === 'adopt');
+					// A trash of a note whose file the owner deleted here writes nothing to the vault: it runs on
+					// standby too, otherwise the holder only sees a vanished file and restores the note if it comes back.
+					const keep = (a: Action): boolean => a.kind === 'adopt' || (a.kind === 'trash-remote' && a.byUser === true);
+					const held = actions.filter((a) => !keep(a));
+					actions = actions.filter(keep);
 					if (wasPullOnly !== this.pullOnly) this.log.info(`standby: ${this.pullOnly} holds the sync lease and syncs this vault; this device changes nothing until the lease moves`);
 					if (held.length > 0) this.log.debug(`${held.length} change(s) wait for the sync lease`);
 				} else if (wasPullOnly !== null) {
 					this.log.info('this device holds the sync lease now; full reconcile on the next sync');
 					this.fullNext = true;
 					// files that vanished while on standby are re-checked from now, and nothing is trashed on the takeover sync
-					actions = actions.filter((a) => a.kind !== 'trash-remote');
+					actions = actions.filter((a) => a.kind !== 'trash-remote' || a.byUser === true);
 					for (const pd of Object.values(this.state.pendingDeletes)) pd.since = now;
 				}
 			} else this.pullOnly = null;
@@ -704,6 +721,13 @@ export class SyncEngine {
 		return this.hashLocal(lf, note);
 	}
 
+	/** Hash of the file this device would write for a remote note at the given path. */
+	private async renderedHash(path: string, id: string, data: NoteData): Promise<string> {
+		const content = this.localContentFor(data);
+		const text = noteToFileText({ ...data, content }, id, basenameOfPath(path), this.settingsFn().tagStyle ?? 'inline', !this.bookmarksAvailable()).text;
+		return this.hashText(path, text);
+	}
+
 	// ---------------- first run ----------------
 
 	private async runFirstRun(entries: IndexEntry[], scan: Scan): Promise<boolean> {
@@ -827,12 +851,20 @@ export class SyncEngine {
 			if (data.deleted) {
 				handled.add(id);
 				if (!lf) {
+					if (scan.presentIds.has(id) && st) {
+						// the file exists but cannot sync right now: decide once it is available
+						this.state.pendingRemote[id] = now;
+						continue;
+					}
 					delete this.state.notes[id];
 					delete this.state.pendingDeletes[id];
-					delete this.state.trashedByMe[id];
+					// trashedByMe stays: if the vanished file comes back later, its note is still restored
 					continue;
 				}
-				if (!(await this.loadLocal(lf))) continue;
+				if (!(await this.loadLocal(lf))) {
+					this.state.pendingRemote[id] = now; // the since-cursor index will not repeat the trash
+					continue;
+				}
 				const note = lf.note as LocalNote;
 				const localHash = await this.hashLocal(lf, note);
 				if (this.state.trashedByMe[id]) {
@@ -875,6 +907,7 @@ export class SyncEngine {
 					continue;
 				}
 				if (st && version === st.version) continue; // local file gone, remote unchanged: deletion flow decides
+				if (this.deletedHereById(id, st)) continue; // deleted in Obsidian: the deletion flow trashes the note
 				if (st) {
 					this.log.info(`${st.path} is missing locally but changed on Simplenote; recreating it`);
 					delete this.state.pendingDeletes[id];
@@ -1004,21 +1037,36 @@ export class SyncEngine {
 				continue;
 			}
 			if (scan.presentIds.has(st.id)) continue; // file exists but is excluded, paused, or blocked: leave the note alone
+			// A file the owner deleted here is trashed at once; a file that only vanished (vault sync, iCloud
+			// eviction) waits, and its note is restored if it comes back.
+			const byUser = this.userDeletes.has(nameKey(st.path));
 			const pd = this.state.pendingDeletes[st.id];
 			const vanishWait = this.sharedVault ? SHARED_VAULT_VANISH_WAIT_MS : SUSPICIOUS_WAIT_MS;
-			if (!pd) {
+			if (!pd && !byUser) {
 				this.state.pendingDeletes[st.id] = { path: st.path, since: now };
 				this.log.warn(`${st.path} vanished; waiting ${vanishWait / 1000} s before trashing the note`);
 				continue;
 			}
-			if (now - pd.since < vanishWait) continue;
+			if (!byUser && pd && now - pd.since < vanishWait) continue;
 			if (this.vault.exists(st.path)) {
 				delete this.state.pendingDeletes[st.id];
+				this.userDeletes.delete(nameKey(st.path));
 				continue;
 			}
-			actions.push(this.trashRemoteAction(st));
+			actions.push(this.trashRemoteAction(st, byUser));
 		}
 		for (const id of Object.keys(this.state.pendingRemote)) if (!this.state.notes[id] && !scan.presentIds.has(id) && !waitingOnUnreadable.has(id)) delete this.state.pendingRemote[id];
+		if (full) for (const id of Object.keys(this.state.trashedByMe)) if (!remoteIds.has(id)) delete this.state.trashedByMe[id];
+		// A deleted file whose note this device has no state for (a standby device that never adopted it): trash by id.
+		for (const [k, d] of this.userDeletes) {
+			if (!d.id || this.state.notes[d.id] || handled.has(d.id) || scan.byId.has(d.id) || scan.presentIds.has(d.id) || scan.pathKeys.has(k)) continue;
+			actions.push(this.trashRemoteByIdAction(d.id, d.path));
+		}
+		// a delete that is long past, or of a file that had no note, says nothing about later files at that path
+		for (const [k, d] of this.userDeletes) {
+			const known = Object.values(this.state.notes).some((n) => nameKey(n.path) === k) || (d.id !== undefined && !handled.has(d.id) && !this.state.notes[d.id]);
+			if (now - d.at > USER_DELETE_TTL_MS || !known) this.userDeletes.delete(k);
+		}
 		return actions;
 	}
 
@@ -1384,13 +1432,46 @@ export class SyncEngine {
 		};
 	}
 
-	private trashRemoteAction(st: NoteState): Action {
+	/** True when the owner deleted the file of this note in Obsidian on this device. */
+	private deletedHereById(id: string, st: NoteState | undefined): boolean {
+		for (const [k, d] of this.userDeletes) if (d.id === id || (st && nameKey(st.path) === k)) return true;
+		return false;
+	}
+
+	/** Trash of a note this device has no state for, whose file the owner deleted here. */
+	private trashRemoteByIdAction(id: string, path: string): Action {
+		return {
+			kind: 'trash-remote',
+			category: 'trash',
+			path,
+			id,
+			byUser: true,
+			describe: `trash note on Simplenote: ${path} (file deleted in Obsidian)`,
+			run: async () => {
+				if (this.dryRun) {
+					this.log.info(`[dry-run] trash note ${id} (${path})`);
+					return;
+				}
+				this.userDeletes.delete(nameKey(path));
+				const got = await this.client.getNote(id);
+				if (!got || got.data.deleted) return;
+				const res = await this.client.postNote(id, { deleted: true, modificationDate: this.now() / 1000 }, { baseVersion: got.version });
+				if (res.outcome === 'conflict') throw new Error('server refused the trash update');
+				this.log.info(`trashed note on Simplenote: ${path}`);
+				delete this.state.pendingDeletes[id];
+				delete this.state.trashedByMe[id];
+			},
+		};
+	}
+
+	private trashRemoteAction(st: NoteState, byUser: boolean): Action {
 		return {
 			kind: 'trash-remote',
 			category: 'trash',
 			path: st.path,
 			id: st.id,
-			describe: `trash note on Simplenote: ${st.path} (file deleted in the vault)`,
+			byUser,
+			describe: `trash note on Simplenote: ${st.path} (${byUser ? 'file deleted in Obsidian' : 'file vanished from the vault'})`,
 			run: async () => {
 				if (this.dryRun) {
 					this.log.info(`[dry-run] trash note ${st.id} (${st.path})`);
@@ -1404,7 +1485,10 @@ export class SyncEngine {
 				this.log.info(`trashed note on Simplenote: ${st.path}`);
 				delete this.state.notes[st.id];
 				delete this.state.pendingDeletes[st.id];
-				this.state.trashedByMe[st.id] = st.path;
+				this.userDeletes.delete(nameKey(st.path));
+				// only a file that vanished by itself restores its note when it comes back
+				if (byUser) delete this.state.trashedByMe[st.id];
+				else this.state.trashedByMe[st.id] = st.path;
 			},
 		};
 	}
@@ -1622,14 +1706,29 @@ export class SyncEngine {
 					return;
 				}
 				if (got.data.deleted) {
-					this.log.warn(`${lf.info.path} points to a trashed note ${id}; pushing the file restores it`);
+					if (this.state.trashedByMe[id]) {
+						this.log.warn(`${lf.info.path} is back after it had vanished; restoring its note on Simplenote`);
+						await this.pushLocal(lf, note, id, got.version, got.data, undefined);
+						delete this.state.trashedByMe[id];
+						return;
+					}
+					if ((await this.hashLocal(lf, note)) === (await this.renderedHash(lf.info.path, id, got.data))) {
+						// a stale copy of a deleted file (vault sync brought it back, or another device kept it)
+						await this.vault.trash(lf.info.path);
+						this.log.info(`trashed ${lf.info.path} (unchanged copy of note ${id}, which is in the Simplenote trash)`);
+						this.deps.notice(`Simplenote: "${lf.info.path}" moved to the Obsidian trash because its note is in the Simplenote trash.`);
+						return;
+					}
+					this.log.warn(`${lf.info.path} points to a trashed note ${id} but holds other text; pushing the file restores the note`);
+					await this.pushLocal(lf, note, id, got.version, got.data, undefined);
+					return;
 				}
 				const localHash = await this.hashLocal(lf, note);
 				if (localHash === (await this.hashRemote(got.data))) {
 					this.state.notes[id] = { id, path: lf.info.path, version: got.version, contentHash: localHash, tags: got.data.tags, systemTags: got.data.systemTags, mtime: lf.info.mtime, size: lf.info.size, pinned: got.data.systemTags.includes('pinned') };
 					return;
 				}
-				if (lf.info.mtime > got.data.modificationDate * 1000 || got.data.deleted) await this.pushLocal(lf, note, id, got.version, got.data, undefined);
+				if (lf.info.mtime > got.data.modificationDate * 1000) await this.pushLocal(lf, note, id, got.version, got.data, undefined);
 				else await this.writeLocal(lf.info.path, id, got.data, got.version, ctx);
 			},
 		};

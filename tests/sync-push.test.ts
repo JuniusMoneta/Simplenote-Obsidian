@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { NEW_FILE_WAIT_MS, SUSPICIOUS_WAIT_MS } from '../src/sync';
 import { makeHarness, logText } from './harness';
+import { MemoryVault } from './memory-vault';
 
 type H = Awaited<ReturnType<typeof makeHarness>>;
 const seed = (h: H, id: string, content: string, tags: string[] = [], systemTags = ['markdown']) => h.server.seed(id, { content, tags, systemTags });
@@ -452,6 +453,20 @@ describe('vanished files and remote trash (iCloud eviction)', () => {
 		expect(logText(h)).toContain('restoring its note');
 	});
 
+	it('a vanished file that comes back several syncs later still restores its note', async () => {
+		const h = await synced();
+		const text = h.vault.get('Other.md') ?? '';
+		h.vault.remove('Other.md');
+		await h.engine.sync();
+		h.advance(SUSPICIOUS_WAIT_MS + 1);
+		await h.engine.sync();
+		await h.engine.sync(); // the index now reports the trash
+		h.vault.put('Other.md', text);
+		await h.engine.sync();
+		expect(h.vault.has('Other.md')).toBe(true);
+		expect(h.server.get('b')?.deleted).toBe(false);
+	});
+
 	it('a note trashed on the web removes the local file only when it is unchanged, and says so', async () => {
 		const h = await synced();
 		h.server.seed('b', { content: 'Other\nbody', deleted: true });
@@ -703,5 +718,88 @@ describe('folders that differ only by case', () => {
 		expect(notices).toHaveLength(1);
 		expect(notices[0]).toContain('"Reading" and "reading"');
 		expect(h.vault.get('reading/B.md')).toBe('b');
+	});
+});
+
+describe('files deleted in Obsidian', () => {
+	async function untitled(): Promise<H> {
+		const h = await makeHarness();
+		seed(h, 'a', '');
+		seed(h, 'b', '');
+		await h.engine.sync();
+		expect(h.vault.paths()).toEqual(['Untitled (2).md', 'Untitled.md']);
+		return h;
+	}
+
+	it('trashes the note on the next sync, without the vanished-file wait', async () => {
+		const h = await untitled();
+		h.vault.remove('Untitled (2).md');
+		h.engine.noteDeletedByUser('Untitled (2).md', 'b');
+		const r = await h.engine.sync();
+		expect(r.trashed).toBe(1);
+		expect(h.server.get('b')?.deleted).toBe(true);
+		expect(h.store.load().trashedByMe).toEqual({});
+	});
+
+	it('a copy that comes back (vault sync) is moved to the trash instead of restoring the note', async () => {
+		for (const syncsBetween of [0, 1]) {
+			const h = await untitled();
+			const text = h.vault.get('Untitled (2).md') ?? '';
+			h.vault.remove('Untitled (2).md');
+			h.engine.noteDeletedByUser('Untitled (2).md', 'b');
+			await h.engine.sync();
+			for (let i = 0; i < syncsBetween; i++) await h.engine.sync();
+			h.vault.put('Untitled (2).md', text);
+			await h.engine.sync();
+			expect(h.server.get('b')?.deleted).toBe(true);
+			expect(h.vault.paths()).toEqual(['Untitled.md']);
+			await h.engine.sync();
+			expect(h.vault.paths()).toEqual(['Untitled.md']);
+			expect(h.server.get('b')?.deleted).toBe(true);
+		}
+	});
+
+	it('a note edited on Simplenote while its file is deleted here goes to the trash, not back into the vault', async () => {
+		const h = await untitled();
+		seed(h, 'b', 'typed on the web');
+		h.vault.remove('Untitled (2).md');
+		h.engine.noteDeletedByUser('Untitled (2).md', 'b');
+		await h.engine.sync();
+		expect(h.vault.paths()).toEqual(['Untitled.md']);
+		expect(h.server.get('b')?.deleted).toBe(true);
+		expect(h.server.get('b')?.content).toBe('typed on the web');
+	});
+
+	it('a copy that comes back with other text restores the note, so no text is lost', async () => {
+		const h = await untitled();
+		h.vault.remove('Untitled (2).md');
+		h.engine.noteDeletedByUser('Untitled (2).md', 'b');
+		await h.engine.sync();
+		await h.engine.sync();
+		h.vault.put('Untitled (2).md', '---\nsimplenote-id: b\nsimplenote-title: ""\n---\nwritten on the other device');
+		await h.engine.sync();
+		expect(h.server.get('b')?.deleted).toBe(false);
+		expect(h.server.get('b')?.content).toBe('\nwritten on the other device');
+		expect(h.vault.has('Untitled (2).md')).toBe(true);
+	});
+
+	it('another device whose file is unreadable when the trash arrives trashes it once readable', async () => {
+		const h1 = await untitled();
+		const v2 = new MemoryVault(() => h1.clock.now);
+		for (const p of h1.vault.paths()) v2.put(p, h1.vault.get(p) ?? '');
+		const h2 = await makeHarness({ server: h1.server, vault: v2, clock: h1.clock });
+		await h2.engine.sync();
+		h1.vault.remove('Untitled (2).md');
+		h1.engine.noteDeletedByUser('Untitled (2).md', 'b');
+		await h1.engine.sync();
+		v2.unreadable.add('untitled (2).md');
+		await h2.engine.sync();
+		expect(v2.has('Untitled (2).md')).toBe(true);
+		v2.unreadable.clear();
+		await h2.engine.sync();
+		expect(v2.paths()).toEqual(['Untitled.md']);
+		expect(h1.server.get('b')?.deleted).toBe(true);
+		await h1.engine.sync();
+		expect(h1.vault.paths()).toEqual(['Untitled.md']);
 	});
 });

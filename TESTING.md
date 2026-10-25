@@ -50,7 +50,9 @@ Setup: install through BRAT on each device, log in, keep the default settings, t
 
 ## Delete, exclude, size
 
-- [ ] Delete a file in Obsidian → after about 60 s the note is in the Simplenote trash (not deleted permanently).
+- [ ] Delete a file in Obsidian → within a few seconds the note is in the Simplenote trash (not deleted permanently).
+- [ ] Shared vault: delete a file on the standby device → its note is in the Simplenote trash within a few seconds; the file does not come back on either device.
+- [ ] Remove a file outside Obsidian (file manager) → the note is trashed after about 60 s (10 minutes on a shared vault).
 - [ ] Trash a note on the web → file moved to the Obsidian trash (`.trash` or system trash per Obsidian setting).
 - [ ] Note deleted permanently on the web → file trashed on the next full reconcile (command or daily).
 - [ ] File in an excluded folder → never uploaded. Move a synced file into it → note unchanged on the web.

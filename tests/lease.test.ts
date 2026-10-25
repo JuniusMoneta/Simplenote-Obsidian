@@ -228,3 +228,56 @@ describe('push lease on a shared vault', () => {
 		expect(server.get(LEASE_NOTE_ID)?.deleted).toBe(true);
 	});
 });
+
+describe('files deleted in Obsidian on a shared vault', () => {
+	async function untitled(): Promise<{ win: H; ios: H; server: FakeSimperium; vault: MemoryVault; clock: { now: number } }> {
+		const s = await sharedVault();
+		s.server.seed('b', { content: '' });
+		s.server.seed('c', { content: '' });
+		await s.win.engine.sync();
+		await s.ios.engine.sync();
+		expect(s.ios.engine.pullOnly).toBe('Windows win0');
+		expect(s.vault.paths()).toEqual(['F/Note.md', 'Untitled (2).md', 'Untitled.md']);
+		return s;
+	}
+	const idOf = (vault: MemoryVault, path: string): string => /simplenote-id: "?([^"\n]+)/.exec(vault.get(path) ?? '')?.[1] ?? '';
+
+	for (const where of ['holder', 'standby'] as const) {
+		it(`deleted on the ${where}: the note is trashed on its next sync, and a copy that comes back does not restore it`, async () => {
+			const { win, ios, server, vault, clock } = await untitled();
+			const device = where === 'holder' ? win : ios;
+			const id = idOf(vault, 'Untitled (2).md');
+			const text = vault.get('Untitled (2).md') ?? '';
+			vault.remove('Untitled (2).md');
+			device.engine.noteDeletedByUser('Untitled (2).md', id);
+			await device.engine.sync();
+			expect(server.get(id)?.deleted).toBe(true);
+			for (let i = 0; i < 2; i++) {
+				clock.now += 15_000;
+				await win.engine.sync();
+				await ios.engine.sync();
+			}
+			vault.put('Untitled (2).md', text); // the vault sync brings a copy back
+			for (let i = 0; i < 3; i++) {
+				clock.now += 15_000;
+				await win.engine.sync();
+				await ios.engine.sync();
+			}
+			expect(server.get(id)?.deleted).toBe(true);
+			expect(vault.paths()).toEqual(['F/Note.md', 'Untitled.md']);
+			expect(logText(win)).not.toContain('restor');
+		});
+	}
+
+	it('a file that vanishes without a delete in Obsidian still waits the shared-vault time', async () => {
+		const { win, ios, server, vault, clock } = await untitled();
+		const id = idOf(vault, 'Untitled (2).md');
+		vault.remove('Untitled (2).md');
+		for (let i = 0; i < 4; i++) {
+			await win.engine.sync();
+			await ios.engine.sync();
+			clock.now += 60_000;
+		}
+		expect(server.get(id)?.deleted).toBe(false);
+	});
+});

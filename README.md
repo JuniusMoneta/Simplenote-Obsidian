@@ -59,8 +59,11 @@ Dry-run mode shows the same dialog and changes nothing.
   stop typing, and a sync runs on "Sync now" and when the app comes back to the foreground (iOS).
 - Simultaneous edits on both sides are merged. The server merges text changes; if it refuses, the
   plugin merges locally (line by line, never dropping text).
-- Deleting a file moves the note to the Simplenote trash. Trashing a note on Simplenote moves the
-  file to the Obsidian trash. Nothing is ever deleted permanently on the server.
+- Deleting a file in Obsidian moves the note to the Simplenote trash on the next sync, on any device (a standby
+  device of a shared vault too). Trashing a note on Simplenote moves the file to the Obsidian trash. Nothing is
+  ever deleted permanently on the server.
+- A copy of a deleted file that comes back later (vault sync, another device) is moved to the Obsidian trash
+  as long as its text is unchanged; it does not bring the note back. A copy with new text restores the note.
 - Renaming a file changes the first line on Simplenote. Changing the first line on Simplenote renames the file.
   Titles that cannot be file names (`# Heading`, `a: b`, very long lines) are kept in `simplenote-title`.
 - Moving a file replaces its `obsidian:` tag. Changing the tag on the web moves the file.
@@ -71,8 +74,9 @@ Dry-run mode shows the same dialog and changes nothing.
 
 - Before the first push on a device, a JSON export of all notes is written to the plugin folder (`backup-YYYYMMDD-HHMM.json`).
 - A sync that would trash more than 10 notes, move more than 20, or change more than 50 asks for confirmation first.
-- A file that vanishes or becomes empty is re-checked after 60 seconds before anything is pushed
-  (iCloud for Windows briefly hides files).
+- A file that vanishes without being deleted in Obsidian, or that becomes empty, is re-checked after 60 seconds
+  before anything is pushed (iCloud for Windows briefly hides files). If such a file comes back after its note
+  was trashed, the note is restored.
 - A new file waits 2 minutes before a note is created, so that an id assigned by another device can arrive through the vault sync.
 - Conflict copies with a duplicated `simplenote-id` are paused and reported; they are never uploaded as new notes.
   A conflict name that a vault sync gives a file (`Note(1).md`, `Note(1)(1).md` from iCloud for Windows, `Note 2.md`
@@ -103,7 +107,9 @@ Dry-run mode shows the same dialog and changes nothing.
   notice asking you to turn the setting on), so a device whose settings did not sync cannot push on its own.
   A synced file that turns up under a conflict-copy name (`Note 2.md`, `Note(1).md`) keeps its title.
   On a shared vault a file that vanishes is re-checked for 10 minutes (not 60 seconds) before its note is trashed,
-  because the vault sync can hide files for minutes while it renames folders.
+  because the vault sync can hide files for minutes while it renames folders. A file deleted in Obsidian does not
+  wait: the device where it was deleted trashes its note on its next sync, also on standby (a trash writes nothing
+  to the vault).
 - Uploads are throttled to 2 requests per second and resume after Obsidian restarts.
 
 ### Exclusions

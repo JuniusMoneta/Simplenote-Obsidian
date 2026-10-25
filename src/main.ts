@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, TAbstractFile, TFile, debounce } from 'obsidian';
+import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, Vault, debounce } from 'obsidian';
 import { obsidianHttp } from './http';
 import { Logger } from './log';
 import { ObsidianVault } from './obsidian-vault';
@@ -133,6 +133,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 			this.lastActivity = Date.now();
 			kick();
 		};
+		this.watchUserDeletes();
 		this.app.workspace.onLayoutReady(() => {
 			this.registerEvent(this.app.vault.on('modify', (f) => onFile(f)));
 			this.registerEvent(this.app.vault.on('create', (f) => onFile(f)));
@@ -152,6 +153,41 @@ export default class SimplenoteSyncPlugin extends Plugin {
 	onunload(): void {
 		if (this.timer !== null) window.clearInterval(this.timer);
 		document.body.removeClass('simplenote-sync-hide-props');
+	}
+
+	/**
+	 * Deletes made in Obsidian (file explorer, commands, other plugins) go through Vault.trash or Vault.delete;
+	 * files removed by a vault sync or by iCloud do not. The engine trashes the notes of the former at once and
+	 * does not restore them when a copy of the file comes back.
+	 */
+	private watchUserDeletes(): void {
+		const vault = this.app.vault;
+		const report = (f: TAbstractFile): void => {
+			const files: TAbstractFile[] = [];
+			if (f instanceof TFolder) Vault.recurseChildren(f, (c) => files.push(c));
+			else files.push(f);
+			for (const file of files) {
+				if (!(file instanceof TFile) || file.extension !== 'md' || this.vaultAdapter.wasWrittenByPlugin(file.path)) continue;
+				const id: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.['simplenote-id'];
+				this.engine.noteDeletedByUser(file.path, typeof id === 'string' ? id : undefined);
+			}
+		};
+		const origTrash = vault.trash.bind(vault);
+		const origDelete = vault.delete.bind(vault);
+		const trash: Vault['trash'] = (file, system) => {
+			report(file);
+			return origTrash(file, system);
+		};
+		const del: Vault['delete'] = (file, force) => {
+			report(file);
+			return origDelete(file, force);
+		};
+		vault.trash = trash;
+		vault.delete = del;
+		this.register(() => {
+			if (vault.trash === trash) vault.trash = origTrash;
+			if (vault.delete === del) vault.delete = origDelete;
+		});
 	}
 
 	applyPropertyVisibility(): void {
