@@ -916,7 +916,13 @@ export class SyncEngine {
 					continue;
 				}
 				if (st && version === st.version) continue; // local file gone, remote unchanged: deletion flow decides
-				if (this.deletedHereById(id, st)) continue; // deleted in Obsidian: the deletion flow trashes the note
+				if (this.deletedHereById(id, st)) {
+					// deleted in Obsidian: the deletion flow trashes the note. If only a conflict copy with the same id
+					// was deleted and the real file comes back, the change is applied then: the since-cursor index
+					// will not repeat it.
+					if (st) this.state.pendingRemote[id] = now;
+					continue;
+				}
 				if (st) {
 					this.log.info(`${st.path} is missing locally but changed on Simplenote; recreating it`);
 					delete this.state.pendingDeletes[id];

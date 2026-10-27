@@ -298,3 +298,10 @@ an unchanged copy goes to the Obsidian trash. A trash that meets an unreadable f
 and applied once the file can be read.
 Residual: a file removed outside Obsidian (file manager, another app) is still a vanished file.
 
+0.4.12: a deleted conflict copy carries the id of the real note. If the real file was missing at the next sync
+(iCloud hiding it) and the note had changed on Simplenote, 0.4.9 to 0.4.11 skipped the change as "deleted in
+Obsidian"; the since-cursor index does not repeat it, so the returning file kept the old text until the daily
+full reconcile. The change now waits in `pendingRemote` (fetched again once the file is back; dropped when the
+note is trashed). Without the skip at all (0.4.8), the note was recreated at once and the returning stale file
+then pushed its old text over the web edit.
+

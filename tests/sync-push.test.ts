@@ -819,6 +819,30 @@ describe('files deleted in Obsidian', () => {
 		return h;
 	}
 
+	it('a deleted conflict copy does not hold back a web edit of its note once the real file is back', async () => {
+		const h = await synced();
+		const original = h.vault.get('F/Note.md') as string;
+		h.vault.put('F/Note(1).md', original);
+		await h.engine.sync();
+		// the copy is deleted in Obsidian while iCloud hides the real file, and the note is edited on the web
+		h.engine.noteDeletedByUser('F/Note(1).md', 'a');
+		h.vault.remove('F/Note(1).md');
+		h.vault.remove('F/Note.md');
+		h.server.seed('a', { content: 'Note\nline one\nline two edited on the web', tags: ['obsidian:F', 'todo'] });
+		await h.engine.sync();
+		expect(h.vault.has('F/Note.md')).toBe(false);
+		expect(h.store.load().pendingRemote.a).toBeDefined();
+		// still hidden: nothing is created in its place
+		await h.engine.sync();
+		expect(h.vault.has('F/Note.md')).toBe(false);
+		h.vault.put('F/Note.md', original);
+		await h.engine.sync();
+		expect(h.vault.get('F/Note.md')).toContain('line two edited on the web');
+		expect(h.server.get('a')?.content).toBe('Note\nline one\nline two edited on the web');
+		expect(h.server.get('a')?.deleted).toBe(false);
+		expect(h.store.load().pendingRemote.a).toBeUndefined();
+	});
+
 	it('trashes the note on the next sync, without the vanished-file wait', async () => {
 		const h = await untitled();
 		h.vault.remove('Untitled (2).md');
