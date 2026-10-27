@@ -218,6 +218,16 @@ Within fifteen minutes:
    were pushed as titles (later pushes restored them, no text lost). Both pushes came one sync after the note's
    own push: that version comes back in the since-cursor index, so the file was handled on the remote side of
    the plan, which never checked the name. Rule: both sides call `keepTitleOfConflictCopy`.
+9. **The kept title lasted one sync (0.4.11).** Same day, on 0.4.10, "Lifeline Learning - Course 2, Essential
+   Skills in Crisis Counseling" was renamed by iCloud to `… 2.md` while being edited. 0.4.10 kept the title once,
+   but then the state followed the file to `… 2.md`, so the next edit compared the copy with itself and pushed
+   "… 2" again (v89, v90; no text lost). iCloud also left an empty `…(1).md` without an id, and it was uploaded
+   as a second note holding only the title. Rules: the kept title is stored per note (`state.keptTitles`) and
+   used while the file name is a conflict copy of it; a pull, or a rename to any other name, drops it. An empty
+   file without an id named like a conflict copy of a synced note in its folder is never uploaded (logged once
+   per session). Renames and new files made in Obsidian go through `Vault.rename` / `Vault.create` (checked in
+   Obsidian 1.14.5: `FileManager.renameFile` calls `Vault.rename`); the plugin wraps both, and a name the owner
+   chose is the title even when it looks like a conflict copy ("Chapter 2.md").
 
 Repair was done by hand on the Windows copy of the vault (duplicates compared body by body, the newest
 body kept, the stored `simplenote-title` kept, copies moved to `.trash/repair-20261012`), the nine notes

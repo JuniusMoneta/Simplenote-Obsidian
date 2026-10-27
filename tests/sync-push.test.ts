@@ -688,6 +688,83 @@ describe('iCloud for Windows conflict names', () => {
 		expect(logText(h)).toContain('named like a sync conflict copy');
 	});
 
+	it('later edits of a conflict copy keep the title too', async () => {
+		const h = await synced();
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		await h.engine.sync();
+		expect(h.store.load().keptTitles.a).toBe('Note');
+		h.vault.put('F/Note 2.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two');
+		h.vault.put('F/Note 2.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited again\nline two');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited again\nline two');
+		// renamed by hand to the old name: nothing to keep any more
+		await h.vault.rename('F/Note 2.md', 'F/Note.md');
+		await h.engine.sync();
+		expect(h.store.load().keptTitles.a).toBeUndefined();
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited again\nline two');
+	});
+
+	it('a conflict copy renamed by hand to another conflict-like name takes that name as title', async () => {
+		const h = await synced();
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		await h.engine.sync();
+		h.engine.noteNamedByUser('F/Note 3.md');
+		await h.vault.rename('F/Note 2.md', 'F/Note 3.md');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note 3\nline one\nline two');
+		expect(h.store.load().keptTitles.a).toBeUndefined();
+	});
+
+	it('a file renamed in Obsidian to "Chapter 2.md" is a rename, not a conflict copy', async () => {
+		const h = await synced();
+		h.engine.noteNamedByUser('F/Note 2.md');
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note 2\nline one\nline two');
+		expect(logText(h)).not.toContain('named like a sync conflict copy');
+	});
+
+	it('a title changed on Simplenote replaces the kept title', async () => {
+		const h = await synced();
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		await h.engine.sync();
+		h.server.seed('a', { content: 'Retitled\nline one\nline two', tags: ['obsidian:F', 'todo'] });
+		await h.engine.sync();
+		expect(h.vault.has('F/Retitled.md')).toBe(true);
+		expect(h.store.load().keptTitles.a).toBeUndefined();
+	});
+
+	it('an empty conflict copy without an id never becomes a note', async () => {
+		const h = await synced();
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		await h.engine.sync();
+		h.vault.put('F/Note(1).md', '');
+		await h.engine.sync();
+		h.advance(NEW_FILE_WAIT_MS + 1);
+		await h.engine.sync();
+		expect(h.server.notes.size).toBe(2);
+		expect(h.vault.get('F/Note(1).md')).toBe('');
+		expect(logText(h)).toContain('empty file named like a sync conflict copy');
+		// with text it is a note like any other
+		h.vault.put('F/Note(1).md', 'something written');
+		await h.engine.sync();
+		h.advance(NEW_FILE_WAIT_MS + 1);
+		await h.engine.sync();
+		expect(h.server.notes.size).toBe(3);
+	});
+
+	it('an empty new file created in Obsidian next to a note of the same name is uploaded as usual', async () => {
+		const h = await synced();
+		h.engine.noteNamedByUser('F/Note 1.md');
+		h.vault.put('F/Note 1.md', '');
+		await h.engine.sync();
+		h.advance(NEW_FILE_WAIT_MS + 1);
+		await h.engine.sync();
+		expect(logText(h)).not.toContain('empty file named like a sync conflict copy');
+	});
+
 	it('with Note.md and Note(1).md carrying one id, Note.md is the keeper', async () => {
 		const h = await synced();
 		h.vault.put('F/Note(1).md', h.vault.get('F/Note.md') as string);

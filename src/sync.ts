@@ -202,6 +202,10 @@ export class SyncEngine {
 	private readonly userDeletes = new Map<string, { at: number; path: string; id?: string }>();
 	/** Folder pairs differing only by case that were already shown in a notice this session. */
 	private caseConflictNoticed = new Set<string>();
+	/** Files the owner renamed or created in Obsidian on this device (name keys), until the state has caught up with them. */
+	private readonly userNames = new Set<string>();
+	/** Empty conflict-copy files already reported in the log this session. */
+	private emptyCopyNoticed = new Set<string>();
 	/** Name of the device holding the push lease while this device pulls only; null when this device pushes. */
 	pullOnly: string | null = null;
 	paused = false;
@@ -250,6 +254,11 @@ export class SyncEngine {
 	 */
 	noteDeletedByUser(path: string, id?: string): void {
 		this.userDeletes.set(nameKey(path), { at: this.now(), path, id: id || undefined });
+	}
+
+	/** The owner renamed or created this file in Obsidian on this device: its name is the title, even one like "Chapter 2". */
+	noteNamedByUser(path: string): void {
+		this.userNames.add(nameKey(path));
 	}
 
 	pause(reason = 'paused by user'): void {
@@ -965,6 +974,7 @@ export class SyncEngine {
 					const tagUpdate = this.folderTagUpdate(st, lf);
 					if (tagUpdate) {
 						if (!(await this.loadLocal(lf))) continue;
+						this.keepTitleOfConflictCopy(lf, st);
 						const a = this.pushAction(lf, lf.note as LocalNote, lf.id, st.version, undefined, st);
 						a.group = tagUpdate;
 						actions.push(a);
@@ -1006,6 +1016,7 @@ export class SyncEngine {
 			}
 			// no id
 			if (claimed.has(nameKey(lf.info.path))) continue;
+			if (await this.isEmptyConflictCopy(lf)) continue;
 			const first = this.state.pendingNew[lf.info.path];
 			if (first === undefined) {
 				this.state.pendingNew[lf.info.path] = now;
@@ -1051,6 +1062,7 @@ export class SyncEngine {
 		}
 		for (const id of Object.keys(this.state.pendingRemote)) if (!this.state.notes[id] && !scan.presentIds.has(id) && !waitingOnUnreadable.has(id)) delete this.state.pendingRemote[id];
 		if (full) for (const id of Object.keys(this.state.trashedByMe)) if (!remoteIds.has(id)) delete this.state.trashedByMe[id];
+		for (const id of Object.keys(this.state.keptTitles)) if (!this.state.notes[id]) delete this.state.keptTitles[id];
 		// A deleted file whose note this device has no state for (a standby device that never adopted it): trash by id.
 		for (const [k, d] of this.userDeletes) {
 			if (!d.id || this.state.notes[d.id] || handled.has(d.id) || scan.byId.has(d.id) || scan.presentIds.has(d.id) || scan.pathKeys.has(k)) continue;
@@ -1270,6 +1282,8 @@ export class SyncEngine {
 	}
 
 	private async writeState(id: string, path: string, text: string, version: number, data: NoteData, info: FileInfo | null): Promise<void> {
+		// the file was just named after the Simplenote title
+		delete this.state.keptTitles[id];
 		const pinned = data.systemTags.includes('pinned');
 		if (this.bookmarksAvailable()) (this.vault.bookmarks as BookmarkAdapter).setBookmarked(path, pinned);
 		this.state.notes[id] = {
@@ -1426,16 +1440,61 @@ export class SyncEngine {
 		};
 	}
 
-	/** "Note.md" became "Note 2.md" or "Note(1).md": the vault sync made a conflict copy; keep the title. */
+	/**
+	 * "Note.md" became "Note 2.md" or "Note(1).md": the vault sync made a conflict copy; keep the title. The title
+	 * is remembered in `keptTitles`, because once the state follows the file to its new name, later edits of
+	 * the copy would otherwise push the suffix. A rename by hand to any other name makes the file name the title again.
+	 */
 	private keepTitleOfConflictCopy(lf: LocalFile, st: NoteState): void {
+		const k = nameKey(lf.info.path);
+		if (this.userNames.has(k)) {
+			delete this.state.keptTitles[st.id];
+			if (nameKey(st.path) === k) this.userNames.delete(k);
+			return;
+		}
+		const name = basenameOfPath(lf.info.path);
+		const kept = this.state.keptTitles[st.id];
+		if (kept !== undefined) {
+			if (isConflictCopyName(kept, name)) {
+				lf.note = fileToNote(lf.text ?? '', kept);
+				return;
+			}
+			delete this.state.keptTitles[st.id];
+		}
 		if (
 			nameKey(st.path) !== nameKey(lf.info.path) &&
 			nameKey(folderOfPath(st.path)) === nameKey(folderOfPath(lf.info.path)) &&
-			isConflictCopyName(basenameOfPath(st.path), basenameOfPath(lf.info.path))
+			isConflictCopyName(basenameOfPath(st.path), name)
 		) {
 			this.log.warn(`${lf.info.path}: named like a sync conflict copy of ${st.path}; keeping the note title`);
+			this.state.keptTitles[st.id] = basenameOfPath(st.path);
 			lf.note = fileToNote(lf.text ?? '', basenameOfPath(st.path));
 		}
+	}
+
+	/**
+	 * An empty file without an id whose name is a conflict copy of a synced note in its folder ("Note(1).md" next
+	 * to "Note.md"): what the vault sync leaves behind, not a note the owner wrote. It is never uploaded.
+	 */
+	private async isEmptyConflictCopy(lf: LocalFile): Promise<boolean> {
+		const name = basenameOfPath(lf.info.path);
+		if (!/(?: \d+| ?\(\d+\))$/.test(name) || this.userNames.has(nameKey(lf.info.path))) return false;
+		const folder = nameKey(folderOfPath(lf.info.path));
+		const titles: string[] = [];
+		for (const st of Object.values(this.state.notes)) {
+			if (nameKey(folderOfPath(st.path)) !== folder) continue;
+			titles.push(basenameOfPath(st.path));
+			const kept = this.state.keptTitles[st.id];
+			if (kept !== undefined) titles.push(kept);
+		}
+		const of = titles.find((t) => isConflictCopyName(t, name));
+		if (of === undefined) return false;
+		if (!(await this.loadLocal(lf)) || (lf.note as LocalNote).body.trim().length > 0) return false;
+		if (!this.emptyCopyNoticed.has(nameKey(lf.info.path))) {
+			this.emptyCopyNoticed.add(nameKey(lf.info.path));
+			this.log.warn(`${lf.info.path}: empty file named like a sync conflict copy of "${of}"; not creating a note for it. Delete it by hand.`);
+		}
+		return true;
 	}
 
 	/** True when the owner deleted the file of this note in Obsidian on this device. */

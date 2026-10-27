@@ -134,6 +134,7 @@ export default class SimplenoteSyncPlugin extends Plugin {
 			kick();
 		};
 		this.watchUserDeletes();
+		this.watchUserNames();
 		this.app.workspace.onLayoutReady(() => {
 			this.registerEvent(this.app.vault.on('modify', (f) => onFile(f)));
 			this.registerEvent(this.app.vault.on('create', (f) => onFile(f)));
@@ -187,6 +188,34 @@ export default class SimplenoteSyncPlugin extends Plugin {
 		this.register(() => {
 			if (vault.trash === trash) vault.trash = origTrash;
 			if (vault.delete === del) vault.delete = origDelete;
+		});
+	}
+
+	/**
+	 * Renames and new files made in Obsidian (file explorer, inline title, commands) go through Vault.rename and
+	 * Vault.create; conflict copies made by a vault sync or by iCloud do not. A name the owner chose is the title
+	 * even when it looks like a conflict copy ("Chapter 2.md").
+	 */
+	private watchUserNames(): void {
+		const vault = this.app.vault;
+		const report = (path: string): void => {
+			if (path.endsWith('.md') && !this.vaultAdapter.wasWrittenByPlugin(path)) this.engine.noteNamedByUser(path);
+		};
+		const origRename = vault.rename.bind(vault);
+		const origCreate = vault.create.bind(vault);
+		const rename: Vault['rename'] = (file, newPath) => {
+			report(newPath);
+			return origRename(file, newPath);
+		};
+		const create: Vault['create'] = (path, data, options) => {
+			report(path);
+			return origCreate(path, data, options);
+		};
+		vault.rename = rename;
+		vault.create = create;
+		this.register(() => {
+			if (vault.rename === rename) vault.rename = origRename;
+			if (vault.create === create) vault.create = origCreate;
 		});
 	}
 
