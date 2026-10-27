@@ -252,3 +252,33 @@ vaults a standby device could never push its own edits); since 0.4.8 it is the d
 request, because every known installation shares one vault and a device whose settings did not sync was the
 cause of the 0.4.7 incident. Owners with separate vaults per device turn it off.
 
+## Deleted files that come back
+
+Reported on 0.4.8 as "Untitled (2)" re-appearing after a dozen deletes. Reproduced in the unit harness
+(`tests/sync-push.test.ts` and `tests/lease.test.ts`, "files deleted in Obsidian"). Causes, all in the plugin:
+
+1. A file that carries the id of a note in the Simplenote trash, on a device with no state for it, was pushed,
+   which restored the note ("pushing the file restores it"). Any copy of the file that came back (vault sync,
+   iCloud, a device that still had it) therefore undid the delete, and the vault got `Untitled (2).md` again.
+   With other notes the same copy was silently linked to the trashed note instead, because the hash check came
+   first; empty notes (content `""`, read back from the file as `"\n"`) never matched and always restored.
+2. A delete made in Obsidian was treated like a file that vanished: the note waited 10 minutes on a shared
+   vault (the timer restarts when the lease moves), and was flagged `trashedByMe`, so the file coming back
+   restored it on purpose.
+3. A delete on a standby device was never sent: standby runs only `adopt` actions, so only the holder could
+   trash the note, after seeing the file vanish (cause 2). A standby device also never adopts empty notes
+   (`""` vs `"\n"`, the update waits for the lease), so it had no state to trash from.
+4. A trash that arrived while the file was unreadable was lost (the cursor moved on), leaving a stale copy.
+
+Fixes: the plugin wraps `Vault.trash` and `Vault.delete`, which Obsidian's own deletes go through and a vault
+sync does not, and records the path and the `simplenote-id` from the metadata cache. Notes of files deleted that
+way are trashed on the next sync without the vanished-file wait and are not flagged `trashedByMe`. This trash
+also runs on standby and on the takeover sync: it is a Simplenote write only, nothing is written to the vault.
+Without state for the note it trashes by id (current version fetched first). A note that changed on Simplenote
+in the meantime is trashed, not recreated (its text stays in the Simplenote trash). A file with the id of a
+trashed note restores it only when this device trashed the note because the file vanished (`trashedByMe`, now
+kept until the note is restored or permanently deleted), or when the file text differs from the trashed note;
+an unchanged copy goes to the Obsidian trash. A trash that meets an unreadable file is kept in `pendingRemote`
+and applied once the file can be read.
+Residual: a file removed outside Obsidian (file manager, another app) is still a vanished file.
+
