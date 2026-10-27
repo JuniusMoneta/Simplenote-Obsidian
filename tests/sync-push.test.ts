@@ -677,6 +677,17 @@ describe('iCloud for Windows conflict names', () => {
 		expect(h.server.get('a')?.content).toBe('Note renamed\nline one\nline two');
 	});
 
+	it('a conflict copy right after a push keeps its title (the push comes back in the index)', async () => {
+		const h = await synced();
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two');
+		await h.engine.sync();
+		expect(h.server.version('a')).toBe(2);
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two');
+		expect(logText(h)).toContain('named like a sync conflict copy');
+	});
+
 	it('with Note.md and Note(1).md carrying one id, Note.md is the keeper', async () => {
 		const h = await synced();
 		h.vault.put('F/Note(1).md', h.vault.get('F/Note.md') as string);

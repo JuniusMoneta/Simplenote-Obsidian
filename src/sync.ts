@@ -934,6 +934,8 @@ export class SyncEngine {
 				handled.add(id);
 				continue;
 			}
+			// the note's own last push comes back in the index too, so a conflict copy can show up on this side
+			if (st) this.keepTitleOfConflictCopy(lf, st);
 			const note = lf.note as LocalNote;
 			const localHash = await this.hashLocal(lf, note);
 			const remoteHash = await this.hashRemote(data);
@@ -971,15 +973,7 @@ export class SyncEngine {
 					}
 					if (!lf.changed && nameKey(st.path) === nameKey(lf.info.path)) continue;
 					if (!(await this.loadLocal(lf))) continue;
-					if (
-						nameKey(st.path) !== nameKey(lf.info.path) &&
-						nameKey(folderOfPath(st.path)) === nameKey(folderOfPath(lf.info.path)) &&
-						isConflictCopyName(basenameOfPath(st.path), basenameOfPath(lf.info.path))
-					) {
-						// "Note.md" became "Note 2.md" or "Note(1).md": the vault sync made a conflict copy; keep the title
-						this.log.warn(`${lf.info.path}: named like a sync conflict copy of ${st.path}; keeping the note title`);
-						lf.note = fileToNote(lf.text ?? '', basenameOfPath(st.path));
-					}
+					this.keepTitleOfConflictCopy(lf, st);
 					const note = lf.note as LocalNote;
 					const h = await this.hashLocal(lf, note);
 					if (h === st.contentHash) {
@@ -1430,6 +1424,18 @@ export class SyncEngine {
 				delete this.state.trashedByMe[id];
 			},
 		};
+	}
+
+	/** "Note.md" became "Note 2.md" or "Note(1).md": the vault sync made a conflict copy; keep the title. */
+	private keepTitleOfConflictCopy(lf: LocalFile, st: NoteState): void {
+		if (
+			nameKey(st.path) !== nameKey(lf.info.path) &&
+			nameKey(folderOfPath(st.path)) === nameKey(folderOfPath(lf.info.path)) &&
+			isConflictCopyName(basenameOfPath(st.path), basenameOfPath(lf.info.path))
+		) {
+			this.log.warn(`${lf.info.path}: named like a sync conflict copy of ${st.path}; keeping the note title`);
+			lf.note = fileToNote(lf.text ?? '', basenameOfPath(st.path));
+		}
 	}
 
 	/** True when the owner deleted the file of this note in Obsidian on this device. */

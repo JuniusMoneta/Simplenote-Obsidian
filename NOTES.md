@@ -212,6 +212,12 @@ Within fifteen minutes:
    setting off. Rules: a lease note in the account makes every device follow the lease (`PushLease.exists`), with
    a notice to turn the setting on; and a synced file whose new name is its old name plus a conflict suffix
    (`isConflictCopyName`) keeps its title instead of pushing the suffix.
+8. **The conflict-name rule ran on one side only (0.4.10).** On 2026-10-27 (0.4.8) renaming a note in Obsidian
+   on Windows left `Accreditation Project (Stormwinds)(1).md`, ` 2.md` and ` 3.md` copies, and a new note got
+   `Fun Group Activity Project 5.md`; "Accreditation Project (Stormwinds) 2" and "Fun Group Activity Project 5"
+   were pushed as titles (later pushes restored them, no text lost). Both pushes came one sync after the note's
+   own push: that version comes back in the since-cursor index, so the file was handled on the remote side of
+   the plan, which never checked the name. Rule: both sides call `keepTitleOfConflictCopy`.
 
 Repair was done by hand on the Windows copy of the vault (duplicates compared body by body, the newest
 body kept, the stored `simplenote-title` kept, copies moved to `.trash/repair-20261012`), the nine notes
