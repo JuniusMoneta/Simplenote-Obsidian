@@ -228,6 +228,16 @@ Within fifteen minutes:
    per session). Renames and new files made in Obsidian go through `Vault.rename` / `Vault.create` (checked in
    Obsidian 1.14.5: `FileManager.renameFile` calls `Vault.rename`); the plugin wraps both, and a name the owner
    chose is the title even when it looks like a conflict copy ("Chapter 2.md").
+10. **Copies stayed until fixed by hand (0.4.13).** On 2026-10-29 (0.4.12), while "November 3, 2026 Ballot —
+   Decisions" was being edited, iCloud for Windows replaced `….md` with `…(1).md` (the text of the last push, v24)
+   and `… 2.md` (the newer text) within six seconds of a push. The plugin did its part (title kept, v25 pushed from
+   `… 2.md`, `…(1).md` paused, no text lost), but the open note had vanished and two copies stood in its place
+   until they were cleaned by hand. Rule: on the device that syncs the vault, once the conflict copies of a note
+   (`keptTitles`) have stayed unchanged for `CONFLICT_SETTLE_MS` (30 s, counted by the plugin, since iCloud keeps
+   mtimes on rename) and the synced copy has nothing left to push, it is renamed back to the kept name; another
+   copy with the same id goes to the Obsidian trash only when its body and tags equal one of the note's last
+   `CONFLICT_HISTORY_DEPTH` (25) Simplenote versions, otherwise it stays paused for the owner. Never on standby,
+   on the takeover sync, in dry run, or when a file under the kept name exists again.
 
 Repair was done by hand on the Windows copy of the vault (duplicates compared body by body, the newest
 body kept, the stored `simplenote-title` kept, copies moved to `.trash/repair-20261012`), the nine notes

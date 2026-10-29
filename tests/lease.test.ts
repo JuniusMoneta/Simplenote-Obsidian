@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { holderOf, LEASE_NOTE_ID, LEASE_TTL_MS, parseLease, renderLease } from '../src/lease';
-import { NEW_FILE_WAIT_MS } from '../src/sync';
+import { CONFLICT_SETTLE_MS, NEW_FILE_WAIT_MS } from '../src/sync';
 import { FakeSimperium } from './fake-simperium';
 import { makeHarness, logText } from './harness';
 import { MemoryVault } from './memory-vault';
@@ -180,6 +180,25 @@ describe('push lease on a shared vault', () => {
 		const r2 = await ios.engine.sync();
 		expect(r2.pushed + r2.pulled).toBe(0);
 		expect(vault.paths()).toEqual(['F/New on web.md', 'F/Note.md']);
+	});
+
+	it('only the holder gives a conflict copy its name back', async () => {
+		const { win, ios, vault, clock } = await sharedVault();
+		await win.engine.sync();
+		await ios.engine.sync();
+		await vault.rename('F/Note.md', 'F/Note 2.md');
+		for (let i = 0; i < 3; i++) {
+			await ios.engine.sync();
+			clock.now += CONFLICT_SETTLE_MS;
+		}
+		expect(vault.paths()).toEqual(['F/Note 2.md']);
+		for (let i = 0; i < 2; i++) {
+			await win.engine.sync();
+			clock.now += CONFLICT_SETTLE_MS;
+		}
+		expect(vault.paths()).toEqual(['F/Note.md']);
+		await ios.engine.sync();
+		expect(ios.store.load().notes.a?.path).toBe('F/Note.md');
 	});
 
 	it('a device that takes the lease over catches up with a full reconcile', async () => {

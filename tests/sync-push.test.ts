@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NEW_FILE_WAIT_MS, SUSPICIOUS_WAIT_MS } from '../src/sync';
+import { CONFLICT_SETTLE_MS, NEW_FILE_WAIT_MS, SUSPICIOUS_WAIT_MS } from '../src/sync';
 import { makeHarness, logText } from './harness';
 import { MemoryVault } from './memory-vault';
 
@@ -715,6 +715,101 @@ describe('iCloud for Windows conflict names', () => {
 		await h.engine.sync();
 		expect(h.server.get('a')?.content).toBe('Note 3\nline one\nline two');
 		expect(h.store.load().keptTitles.a).toBeUndefined();
+	});
+
+	// 2026-10-29: while a note was edited, iCloud for Windows split "Note.md" into "Note(1).md" (the text of the
+	// last push) and "Note 2.md" (the newer text); the note vanished from its place and two copies appeared.
+	const splitByICloud = async (h: H, olderText: string) => {
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two');
+		await h.engine.sync();
+		expect(h.server.version('a')).toBe(2);
+		await h.vault.rename('F/Note.md', 'F/Note(1).md');
+		h.vault.put('F/Note(1).md', olderText);
+		h.vault.put('F/Note 2.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two edited');
+		await h.engine.sync();
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two edited');
+		expect(h.store.load().pausedPaths).toEqual(['F/Note(1).md']);
+	};
+
+	it('a note split into conflict copies gets its name back once they settle; the older copy goes to the trash', async () => {
+		const h = await synced();
+		await splitByICloud(h, '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two');
+		const version = h.server.version('a');
+		h.advance(CONFLICT_SETTLE_MS / 2);
+		await h.engine.sync();
+		expect(h.vault.has('F/Note 2.md')).toBe(true);
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		expect(h.vault.paths()).toEqual(['F/Note.md', 'Other.md']);
+		expect(h.vault.get('F/Note.md')).toContain('line two edited');
+		expect(h.vault.trashed.map((t) => t.path)).toEqual(['F/Note(1).md']);
+		expect(h.store.load().notes.a?.path).toBe('F/Note.md');
+		expect(h.store.load().keptTitles.a).toBeUndefined();
+		expect(h.store.load().pausedPaths).toEqual([]);
+		expect(h.notices.some((n) => n.includes('its name is back'))).toBe(true);
+		// nothing changed on Simplenote, and nothing is left to do
+		expect(h.server.version('a')).toBe(version);
+		expect(h.server.get('a')?.deleted).toBe(false);
+		const again = await h.engine.sync();
+		expect(again.pulled + again.pushed + again.trashed).toBe(0);
+		expect(h.server.version('a')).toBe(version);
+	});
+
+	it('a conflict copy with text that is nowhere on Simplenote is left to merge by hand', async () => {
+		const h = await synced();
+		await splitByICloud(h, '---\nsimplenote-id: a\ntags:\n  - todo\n---\nonly in this copy');
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		expect(h.vault.paths()).toEqual(['F/Note(1).md', 'F/Note.md', 'Other.md']);
+		expect(h.vault.trashed).toEqual([]);
+		expect(h.store.load().pausedPaths).toEqual(['F/Note(1).md']);
+		expect(logText(h)).toContain('left for you to merge by hand');
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two edited');
+	});
+
+	it('copies that keep changing are not renamed until they settle', async () => {
+		const h = await synced();
+		await splitByICloud(h, '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two');
+		for (let i = 0; i < 3; i++) {
+			h.advance(CONFLICT_SETTLE_MS / 2);
+			h.vault.put('F/Note 2.md', `---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two edited ${i}`);
+			await h.engine.sync();
+			expect(h.vault.has('F/Note 2.md')).toBe(true);
+		}
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two edited 2');
+		h.advance(CONFLICT_SETTLE_MS / 2);
+		await h.engine.sync();
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		expect(h.vault.get('F/Note.md')).toContain('line two edited 2');
+		expect(h.vault.has('F/Note(1).md')).toBe(false);
+	});
+
+	it('a copy is not renamed onto a file that has its name again', async () => {
+		const h = await synced();
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		await h.engine.sync();
+		h.vault.put('F/Note.md', '---\ntags:\n  - todo\n---\nsomething else');
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		expect(h.vault.has('F/Note 2.md')).toBe(true);
+		expect(h.vault.get('F/Note.md')).toContain('something else');
+	});
+
+	it('dry run renames nothing', async () => {
+		const h = await synced();
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		await h.engine.sync();
+		h.settings.dryRun = true;
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		expect(h.vault.has('F/Note 2.md')).toBe(true);
 	});
 
 	it('a file renamed in Obsidian to "Chapter 2.md" is a rename, not a conflict copy', async () => {

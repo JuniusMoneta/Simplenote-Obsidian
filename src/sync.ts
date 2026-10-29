@@ -42,6 +42,10 @@ export const USER_DELETE_TTL_MS = 10 * 60 * 1000;
 /** On a shared vault the vault sync can hide a file for minutes while it moves folders around; wait longer before trashing its note. */
 export const SHARED_VAULT_VANISH_WAIT_MS = 10 * 60 * 1000;
 export const FULL_RECONCILE_MS = 24 * 60 * 60 * 1000;
+/** Conflict copies of a note must stay unchanged this long before the synced copy gets its name back. */
+export const CONFLICT_SETTLE_MS = 30 * 1000;
+/** How many versions back the Simplenote history is searched for the text of a surplus conflict copy. */
+export const CONFLICT_HISTORY_DEPTH = 25;
 export const GUARD_LIMITS = { trash: 10, move: 20, change: 50 };
 
 export interface EngineSettings {
@@ -206,6 +210,8 @@ export class SyncEngine {
 	private readonly userNames = new Set<string>();
 	/** Empty conflict-copy files already reported in the log this session. */
 	private emptyCopyNoticed = new Set<string>();
+	/** Conflict copies of a note waiting to settle: note id -> when this set of copies was first seen, and its signature. */
+	private readonly conflictCopiesSeen = new Map<string, { since: number; sig: string }>();
 	/** Name of the device holding the push lease while this device pulls only; null when this device pushes. */
 	pullOnly: string | null = null;
 	paused = false;
@@ -395,6 +401,7 @@ export class SyncEngine {
 				scan = await this.scanLocal(settings);
 			}
 			let actions = await this.plan(fetched.entries, scan, full, now);
+			let takeover = false;
 			if (lease) {
 				const d = await lease.decide(now);
 				const wasPullOnly = this.pullOnly;
@@ -413,6 +420,7 @@ export class SyncEngine {
 				} else if (wasPullOnly !== null) {
 					this.log.info('this device holds the sync lease now; full reconcile on the next sync');
 					this.fullNext = true;
+					takeover = true;
 					// files that vanished while on standby are re-checked from now, and nothing is trashed on the takeover sync
 					actions = actions.filter((a) => a.kind !== 'trash-remote' || a.byUser === true);
 					for (const pd of Object.values(this.state.pendingDeletes)) pd.since = now;
@@ -456,6 +464,15 @@ export class SyncEngine {
 					if (a.kind === 'create-local' || a.kind === 'update-local' || a.kind === 'trash-local' || a.kind === 'adopt') pullFailed = true;
 				}
 				if (!this.dryRun && ++n % 10 === 0) this.store.save(this.state);
+			}
+			// writes to the vault: only the device that syncs it, never on the takeover sync
+			if (!this.dryRun && this.pullOnly === null && !takeover) {
+				try {
+					await this.restoreConflictCopyNames(now);
+				} catch (e) {
+					if (e instanceof AuthError) throw e;
+					this.log.error(`restoring conflict copy names: ${errorText(e)}`);
+				}
 			}
 			if (trashedLocally.length > 0) {
 				const shown = trashedLocally.slice(0, 3).join(', ');
@@ -1166,14 +1183,8 @@ export class SyncEngine {
 			lf.id = lf.note?.id ?? null;
 			files.push(lf);
 		}
-		// Copies in one folder differ in file name, hence in title: compare body and tags only.
-		const copyHash = (lf: LocalFile, note: LocalNote): Promise<string> => {
-			const body = splitContent(this.remoteContentFor(lf, note)).body;
-			return noteHash(`\n${body}`, this.localTags(lf, note).map(tagKey), false);
-		};
-		const remoteCopyHash = (data: NoteData): Promise<string> => noteHash(`\n${splitContent(data.content).body}`, data.tags.map(tagKey), false);
 		const hashes = new Map<LocalFile, string>();
-		for (const lf of files) hashes.set(lf, await copyHash(lf, lf.note as LocalNote));
+		for (const lf of files) hashes.set(lf, await this.copyHash(lf, lf.note as LocalNote));
 		const trashFile = async (lf: LocalFile, why: string): Promise<void> => {
 			if (this.dryRun) this.log.info(`[dry-run] trash ${lf.info.path} (${why})`);
 			else {
@@ -1200,7 +1211,7 @@ export class SyncEngine {
 			const keeper = this.pickKeeper(id, list);
 			const remote = await this.client.getNote(id);
 			const accepted = new Set<string>([hashes.get(keeper) as string]);
-			if (remote) accepted.add(await remoteCopyHash(remote.data));
+			if (remote) accepted.add(await this.remoteCopyHash(remote.data));
 			result.kept.push(keeper.info.path);
 			for (const other of list) {
 				if (other === keeper) continue;
@@ -1476,6 +1487,100 @@ export class SyncEngine {
 			this.state.keptTitles[st.id] = basenameOfPath(st.path);
 			lf.note = fileToNote(lf.text ?? '', basenameOfPath(st.path));
 		}
+	}
+
+	/**
+	 * iCloud for Windows renames a file that changed on two sides at once to "Note(1).md", "Note 2.md"…: the note
+	 * seems to vanish and copies appear (2026-10-29, while a note was being edited). Once the copies of a note have
+	 * stayed the same for `CONFLICT_SETTLE_MS`, the synced copy gets its kept name back, and the other copies of the
+	 * same note go to the Obsidian trash when their text is already in the note's Simplenote history. A copy whose
+	 * text is found nowhere stays, paused, for the owner to merge. Runs on the device that syncs the vault only.
+	 */
+	private async restoreConflictCopyNames(now: number): Promise<void> {
+		const waiting = new Set<string>();
+		const files = this.vault.listMarkdownFiles();
+		for (const [id, kept] of Object.entries(this.state.keptTitles)) {
+			const st = this.state.notes[id];
+			if (!st || !isConflictCopyName(kept, basenameOfPath(st.path))) continue;
+			const folder = folderOfPath(st.path);
+			const target = joinPath(folder, kept);
+			const cur = this.vault.stat(st.path);
+			// a pending edit is pushed first; a file under the old name (back, or not readable yet) is left alone
+			if (!cur || cur.mtime !== st.mtime || cur.size !== st.size || this.vault.exists(target)) continue;
+			const copies = files.filter((f) => nameKey(folderOfPath(f.path)) === nameKey(folder) && isConflictCopyName(kept, basenameOfPath(f.path)));
+			const sig = copies
+				.map((f) => `${f.path}|${f.mtime}|${f.size}`)
+				.sort()
+				.join('\n');
+			waiting.add(id);
+			const seen = this.conflictCopiesSeen.get(id);
+			if (!seen || seen.sig !== sig) {
+				this.conflictCopiesSeen.set(id, { since: now, sig });
+				continue;
+			}
+			if (now - seen.since < CONFLICT_SETTLE_MS) continue;
+
+			const surplus = new Map<string, string>();
+			for (const info of copies) {
+				if (nameKey(info.path) === nameKey(st.path)) continue;
+				const lf: LocalFile = { info, id: null, changed: true, excluded: null };
+				if (!(await this.loadLocal(lf)) || lf.note?.id !== id) continue;
+				surplus.set(info.path, await this.copyHash(lf, lf.note));
+			}
+			const known = surplus.size > 0 ? await this.findInHistory(id, new Set(surplus.values())) : new Set<string>();
+
+			await this.vault.rename(st.path, target);
+			const info = this.vault.stat(target);
+			this.log.info(`${st.path}: name made by the vault sync; renamed back to ${target}`);
+			st.path = target;
+			if (info) {
+				st.mtime = info.mtime;
+				st.size = info.size;
+			}
+			delete this.state.keptTitles[id];
+			this.conflictCopiesSeen.delete(id);
+			let trashed = 0;
+			for (const [path, hash] of surplus) {
+				if (!known.has(hash)) {
+					this.log.warn(`${path} is a copy of ${target} with text not found on Simplenote; left for you to merge by hand`);
+					continue;
+				}
+				await this.vault.trash(path);
+				this.state.pausedPaths = this.state.pausedPaths.filter((p) => nameKey(p) !== nameKey(path));
+				delete this.state.problems[path];
+				this.log.info(`trashed ${path} (older copy of ${target}, its text is in the Simplenote history)`);
+				trashed++;
+			}
+			const left = surplus.size - trashed;
+			this.deps.notice(
+				`Simplenote: the vault sync renamed "${kept}"; its name is back${trashed > 0 ? `, ${trashed} older copy(ies) moved to the trash` : ''}${left > 0 ? `, ${left} copy(ies) with other text left to merge by hand` : ''}.`,
+			);
+		}
+		for (const id of [...this.conflictCopiesSeen.keys()]) if (!waiting.has(id)) this.conflictCopiesSeen.delete(id);
+	}
+
+	/** The subset of `hashes` (see `copyHash`) found among the latest `CONFLICT_HISTORY_DEPTH` versions of a note. */
+	private async findInHistory(id: string, hashes: Set<string>): Promise<Set<string>> {
+		const found = new Set<string>();
+		const current = await this.client.getNote(id);
+		if (!current) return found;
+		for (let v = current.version; v > 0 && v > current.version - CONFLICT_HISTORY_DEPTH && found.size < hashes.size; v--) {
+			const old = v === current.version ? current : await this.client.getNote(id, v);
+			if (!old) continue; // outside the server's retention
+			const h = await this.remoteCopyHash(old.data);
+			if (hashes.has(h)) found.add(h);
+		}
+		return found;
+	}
+
+	/** Copies in one folder differ in file name, hence in title: they are compared by body and tags only. */
+	private copyHash(lf: LocalFile, note: LocalNote): Promise<string> {
+		const body = splitContent(this.remoteContentFor(lf, note)).body;
+		return noteHash(`\n${body}`, this.localTags(lf, note).map(tagKey), false);
+	}
+
+	private remoteCopyHash(data: NoteData): Promise<string> {
+		return noteHash(`\n${splitContent(data.content).body}`, data.tags.map(tagKey), false);
 	}
 
 	/**
