@@ -154,3 +154,15 @@ Secret storage is device-wide, not per vault (Obsidian 1.11.4+). The token id no
 (`simplenote-sync-token-<appId>`); the old id is migrated by the first vault that loads and then cleared,
 so a second vault asks for its own login instead of silently syncing the first vault's account.
 
+
+## Trashed note that keeps coming back (0.4.3)
+
+Reported as an "Untitled" note (text "WiFi.") that kept reappearing. Reproduced in
+`tests/sync-duplicates.test.ts`. The note is trashed on Simplenote; device A moves its file to the
+Obsidian trash. Device B handles the trash before the vault sync (iCloud) has delivered its copy of the
+file, so B has no state for the note. The copy arrives later. B's plan saw "file with an id, no state, id
+not in the since-cursor index" and linked it: same text → B kept the file and recorded the trashed note
+as synced; other text → B pushed it and restored the note. Either way the file travelled back to every
+device. Fix: in that case the plan reads the note first. A trashed note whose text and tags equal the
+file is a stale copy: the file goes to the Obsidian trash. A copy with other text still restores the
+note, so no edit is lost.

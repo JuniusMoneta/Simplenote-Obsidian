@@ -860,7 +860,16 @@ export class SyncEngine {
 					handled.add(lf.id);
 				} else if (!remoteIds.has(lf.id)) {
 					if (!(await this.loadLocal(lf))) continue;
-					actions.push(this.linkOrCreateAction(lf, lf.note as LocalNote, lf.id, ctx));
+					const note = lf.note as LocalNote;
+					// The note was trashed before the vault sync delivered this file here (the other device already
+					// moved its copy to the trash). A copy with the same text is stale: trash it instead of keeping
+					// it, so it does not travel back to the other devices. A copy with other text restores the note.
+					const got = await this.client.getNote(lf.id);
+					if (got?.data.deleted && (await this.twinHashLocal(lf, note)) === (await this.twinHashRemote(got.data))) {
+						actions.push(this.trashLocalAction(lf, lf.id, 'trashed on Simplenote; late copy from the vault sync'));
+					} else {
+						actions.push(this.linkOrCreateAction(lf, note, lf.id, ctx));
+					}
 					handled.add(lf.id);
 				}
 				continue;

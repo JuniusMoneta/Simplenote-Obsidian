@@ -179,3 +179,47 @@ describe('duplicate cleanup command', () => {
 		expect(h.vault.has('F/Note (2).md')).toBe(true);
 	});
 });
+
+describe('a note trashed on Simplenote stays trashed when the vault sync delivers a copy late', () => {
+	async function trashedThenLateCopy(): Promise<{ a: H; b: H; bv: MemoryVault; id: string; text: string; mtime: number }> {
+		const a = await makeHarness();
+		const bv = new MemoryVault(() => a.clock.now);
+		const b = await makeHarness({ server: a.server, clock: a.clock, vault: bv });
+		await a.engine.sync();
+		await b.engine.sync();
+		a.vault.put('Untitled.md', 'WiFi.');
+		await a.engine.sync();
+		a.advance(NEW_FILE_WAIT_MS + 10_000);
+		await a.engine.sync();
+		const id = [...a.server.notes.keys()][0] as string;
+		const text = a.vault.get('Untitled.md') as string;
+		const mtime = a.vault.mtimeOf('Untitled.md') as number;
+		a.advance(60_000);
+		a.server.seed(id, { content: 'Untitled\nWiFi.', tags: [], systemTags: ['markdown'], deleted: true });
+		await a.engine.sync();
+		await b.engine.sync(); // B sees the trashed note before its copy of the file arrives
+		expect(a.vault.paths()).toEqual([]);
+		return { a, b, bv, id, text, mtime };
+	}
+
+	it('an identical late copy goes to the Obsidian trash', async () => {
+		const { a, b, bv, id, text, mtime } = await trashedThenLateCopy();
+		bv.put('Untitled.md', text, mtime);
+		a.advance(10_000);
+		await b.engine.sync();
+		expect(bv.paths()).toEqual([]);
+		expect(a.server.get(id)?.deleted).toBe(true);
+		expect(b.store.load().notes[id]).toBeUndefined();
+		expect(logText(b)).toContain('late copy from the vault sync');
+	});
+
+	it('a late copy with other text still restores the note', async () => {
+		const { a, b, bv, id, text } = await trashedThenLateCopy();
+		bv.put('Untitled.md', `${text}\npassword here`);
+		a.advance(10_000);
+		await b.engine.sync();
+		expect(bv.paths()).toEqual(['Untitled.md']);
+		expect(a.server.get(id)?.deleted).toBe(false);
+		expect(a.server.get(id)?.content).toBe('Untitled\nWiFi.\npassword here');
+	});
+});
