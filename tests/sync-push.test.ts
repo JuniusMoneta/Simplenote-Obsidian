@@ -6,6 +6,18 @@ import { MemoryVault } from './memory-vault';
 type H = Awaited<ReturnType<typeof makeHarness>>;
 const seed = (h: H, id: string, content: string, tags: string[] = [], systemTags = ['markdown']) => h.server.seed(id, { content, tags, systemTags });
 
+/** Records every content POST for `id` sent against a version older than the server's current one. */
+function watchStalePosts(h: H, id: string): string[] {
+	const stale: string[] = [];
+	const prev = h.server.opts.beforeRequest;
+	h.server.opts.beforeRequest = (req) => {
+		prev(req);
+		const m = new RegExp(`/i/${id}/v/(\\d+)`).exec(req.url);
+		if (req.method === 'POST' && m && Number(m[1]) !== h.server.version(id)) stale.push(`v${m[1]} while at v${h.server.version(id)}`);
+	};
+	return stale;
+}
+
 async function synced(opts: Parameters<typeof makeHarness>[0] = {}): Promise<H> {
 	const h = await makeHarness(opts);
 	seed(h, 'a', 'Note\nline one\nline two', ['obsidian:F', 'todo']);
@@ -374,21 +386,57 @@ describe('no ccid dedupe on the server (verified live)', () => {
 		expect(logText(h)).toContain('identical content already on Simplenote');
 	});
 
-	it('a different edit pushed meanwhile is merged by the server', async () => {
+	it('a different edit pushed meanwhile is merged here, never by the server', async () => {
 		const h = await makeHarness();
 		seed(h, 'a', 'Note\nline one\nline two', ['obsidian:F']);
 		await h.engine.sync();
 		h.vault.put('F/Note.md', '---\nsimplenote-id: a\n---\nline one local\nline two');
 		let fired = false;
+		const stalePosts = watchStalePosts(h, 'a');
+		const watch = h.server.opts.beforeRequest;
 		h.server.opts.beforeRequest = (req) => {
 			if (!fired && req.url.includes('/i/a')) {
 				fired = true;
 				h.server.seed('a', { content: 'Note\nline one\nline two web', tags: ['obsidian:F'] });
 			}
+			watch(req);
 		};
 		await h.engine.sync();
 		expect(h.server.get('a')?.content).toBe('Note\nline one local\nline two web');
 		expect(h.vault.get('F/Note.md')).toContain('line two web');
+		expect(stalePosts).toEqual([]);
+	});
+
+	it('a note whose line endings changed on Simplenote is not repeated when an edit here is pushed', async () => {
+		// 2026-11-07: a CRLF note was saved with LF elsewhere; the stale-base push made the server add the whole
+		// body again on every push, until "Lacan the Mind of the Modernist" held 11 copies and was refused as too large.
+		const h = await makeHarness();
+		const lines = Array.from({ length: 40 }, (_, i) => `paragraph ${i}`);
+		seed(h, 'a', `Note\r\n${lines.join('\r\n')}`, ['obsidian:F']);
+		await h.engine.sync();
+		h.server.seed('a', { content: `Note\n${lines.join('\n')}`, tags: ['obsidian:F'] });
+		h.vault.put('F/Note.md', `---\nsimplenote-id: a\n---\n${lines.join('\n')}\nadded here`);
+		const stalePosts = watchStalePosts(h, 'a');
+		const r = await h.engine.sync();
+		expect(r.ok).toBe(true);
+		expect(h.server.get('a')?.content).toBe(`Note\n${lines.join('\n')}\nadded here`);
+		expect(h.vault.get('F/Note.md')).toBe(`---\nsimplenote-id: a\n---\n${lines.join('\n')}\nadded here`);
+		expect(stalePosts).toEqual([]);
+		const r2 = await h.engine.sync();
+		expect(r2.pushed + r2.pulled).toBe(0);
+	});
+
+	it('without the base version on Simplenote, both versions are kept line by line, shared lines once', async () => {
+		const h = await makeHarness();
+		seed(h, 'a', 'Note\nline one\nline two', ['obsidian:F']);
+		await h.engine.sync();
+		h.vault.put('F/Note.md', '---\nsimplenote-id: a\n---\nline one\nline two\nlocal line');
+		h.server.seed('a', { content: 'Note\nweb line\nline one\nline two', tags: ['obsidian:F'] });
+		h.server.notes.get('a')?.history.delete(1);
+		const r = await h.engine.sync();
+		expect(r.ok).toBe(true);
+		expect(h.server.get('a')?.content).toBe('Note\nweb line\nline one\nline two\nlocal line');
+		expect(logText(h)).toContain('no longer on Simplenote');
 	});
 
 	it('an oversize note is announced once with a remedy, retried only when it changes, and clears itself', async () => {

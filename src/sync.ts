@@ -5,7 +5,7 @@
 import { joinFrontmatter, setKeys, splitFrontmatter } from './frontmatter';
 import { computeCcid, newNoteId, noteHash } from './hash';
 import { Logger } from './log';
-import { mergeStrings } from './merge';
+import { mergeStrings, mergeWithoutBase } from './merge';
 import {
 	basenameMatchesTitle,
 	basenameOfPath,
@@ -1779,6 +1779,17 @@ export class SyncEngine {
 		};
 	}
 
+	/**
+	 * Merges `ours` (based on `baseVersion`) with `theirs` (Simplenote's current text). Without the base text
+	 * (outside Simplenote's history) both are kept line by line, shared lines once, so nothing is lost or repeated.
+	 */
+	private async mergeOnto(id: string, baseVersion: number, ours: string, theirs: string, base?: { data: NoteData } | null): Promise<string> {
+		const b = base !== undefined ? base : await this.client.getNote(id, baseVersion);
+		if (b) return mergeStrings(b.data.content, ours, theirs);
+		this.log.warn(`note ${id}: v${baseVersion} is no longer on Simplenote; keeping the lines of both versions`);
+		return mergeWithoutBase(ours, theirs);
+	}
+
 	private async pushLocal(lf: LocalFile, note: LocalNote, id: string, baseVersion: number, remote: NoteData | undefined, st: NoteState | undefined): Promise<void> {
 		const content = this.remoteContentFor(lf, note);
 		let tags = this.localTags(lf, note);
@@ -1798,6 +1809,8 @@ export class SyncEngine {
 			this.log.info(`[dry-run] push ${lf.info.path} (base v${baseVersion})`);
 			return;
 		}
+		let pushContent = content;
+		let pushBase = baseVersion;
 		// The server does not dedupe ccids (NOTES.md): re-check the version right before pushing so an
 		// identical edit that another device pushed meanwhile is adopted instead of applied twice.
 		const current = await this.client.getNote(id);
@@ -1825,15 +1838,19 @@ export class SyncEngine {
 				tags = mergeTags(st.tags, this.localTags(lf, note), current.data.tags);
 				systemTags = setPinned(current.data.systemTags, pinned);
 			}
-			this.log.debug(`${lf.info.path}: Simplenote is at v${current.version}, pushing against v${baseVersion} (server merges)`);
+			// Never push against the old base: the server applies such a POST as a patch, so text it already
+			// has (a line-ending change, a whole note) is added again. 2026-11-07 the "Lacan" note grew to 11 copies.
+			this.log.info(`${lf.info.path}: Simplenote is at v${current.version}, the edit is based on v${baseVersion}; merging locally`);
+			pushContent = await this.mergeOnto(id, baseVersion, content, current.data.content);
+			pushBase = current.version;
 		}
-		const body: Partial<NoteData> = { content, tags, systemTags, deleted: false, modificationDate: this.now() / 1000 };
-		let res = await this.client.postNote(id, body, { baseVersion, ccid });
+		const pushHash = await noteHash(pushContent, tags.map(tagKey), pinned);
+		const body: Partial<NoteData> = { content: pushContent, tags, systemTags, deleted: false, modificationDate: this.now() / 1000 };
+		let res = await this.client.postNote(id, body, { baseVersion: pushBase, ccid: pushBase === baseVersion ? ccid : await computeCcid(id, pushBase, pushHash) });
 		if (res.outcome === 'conflict') {
-			this.log.warn(`${lf.info.path}: server refused base v${baseVersion} (current v${res.version}); merging locally`);
-			const base = await this.client.getNote(id, baseVersion);
-			const baseContent = base?.data.content ?? res.data.content;
-			const merged = mergeStrings(baseContent, content, res.data.content);
+			this.log.warn(`${lf.info.path}: server refused base v${pushBase} (current v${res.version}); merging locally`);
+			const base = await this.client.getNote(id, pushBase);
+			const merged = await this.mergeOnto(id, pushBase, pushContent, res.data.content, base);
 			const mergedTags = mergeTags(base?.data.tags ?? res.data.tags, tags, res.data.tags);
 			const mergedHash = await noteHash(merged, mergedTags.map(tagKey), pinned);
 			res = await this.client.postNote(
