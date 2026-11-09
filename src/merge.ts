@@ -1,6 +1,6 @@
 /**
- * Three-way merge used by the fake Simperium server in tests and as the
- * client-side fallback when the server refuses a stale-version update.
+ * Three-way merge used whenever Simplenote moved past the version a local edit is based on: the plugin
+ * merges here and never asks the server to (the server re-applies a stale-base edit as a patch).
  * Works line by line; regions that both sides changed are merged again
  * character by character. Never drops text: a true conflict keeps both
  * versions (ours first, then theirs).
@@ -102,13 +102,62 @@ function mergeChars(base: string, a: string, b: string): string {
 	return diff3(Array.from(base), Array.from(a), Array.from(b), keepBoth).join('');
 }
 
-/** Three-way merge of strings. `a` is "ours", `b` is "theirs". */
+/**
+ * Two-way merge without a usable base: lines both sides share appear once, lines only one side has are all
+ * kept (ours first where both sides differ). Never drops text and never repeats a shared line.
+ */
+export function unionLines(a: string[], b: string[]): string[] {
+	const m = lcsMatch(a, b);
+	const out: string[] = [];
+	let j = 0;
+	for (let i = 0; i < a.length; i++) {
+		const mi = m[i] as number;
+		if (mi === -1) {
+			out.push(a[i] as string);
+			continue;
+		}
+		for (; j < mi; j++) out.push(b[j] as string);
+		out.push(a[i] as string);
+		j = mi + 1;
+	}
+	for (; j < b.length; j++) out.push(b[j] as string);
+	return out;
+}
+
+const normalizeEol = (s: string): string => s.replace(/\r\n?/g, '\n');
+
+/**
+ * Three-way merge of strings. `a` is "ours", `b` is "theirs".
+ * Line endings are compared as `\n`: a note whose CRLF was turned into LF on one side would otherwise
+ * differ on every line, and the whole note would come out twice (2026-11-07, "Lacan" note).
+ */
 export function mergeStrings(base: string, a: string, b: string): string {
 	if (a === b) return a;
 	if (base === a) return b;
 	if (base === b) return a;
-	const lineConflict: Conflict<string> = (bl, al, bbl) => mergeChars(bl.join('\n'), al.join('\n'), bbl.join('\n')).split('\n');
-	return diff3(base.split('\n'), a.split('\n'), b.split('\n'), lineConflict).join('\n');
+	const nBase = normalizeEol(base);
+	const nA = normalizeEol(a);
+	const nB = normalizeEol(b);
+	if (nA === nB) return nA;
+	if (nBase === nA) return nB;
+	if (nBase === nB) return nA;
+	const lineConflict: Conflict<string> = (bl, al, bbl) => {
+		const bs = bl.join('\n');
+		const as = al.join('\n');
+		const bbs = bbl.join('\n');
+		// beyond this the character merge cannot align anything and would keep both whole blocks
+		if (bs.length * as.length > MAX_DP_CELLS || bs.length * bbs.length > MAX_DP_CELLS) return unionLines(al, bbl);
+		return mergeChars(bs, as, bbs).split('\n');
+	};
+	return diff3(nBase.split('\n'), nA.split('\n'), nB.split('\n'), lineConflict).join('\n');
+}
+
+/** Merge for when the base version is gone (outside Simplenote's history): see `unionLines`. */
+export function mergeWithoutBase(a: string, b: string): string {
+	const nA = normalizeEol(a);
+	const nB = normalizeEol(b);
+	if (nA === nB) return a === b ? a : nA;
+	return unionLines(nA.split('\n'), nB.split('\n')).join('\n');
 }
 
 /** Line-based similarity 0..1 (2 * LCS / (len a + len b)). */

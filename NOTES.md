@@ -73,12 +73,21 @@ rewrite on a case-only rename; see the incident below.
 `contentHash = sha256(content + "\0" + sortedTags.join("\x01") + "\0" + ("pinned"|""))`.
 `ccid = sha256(noteId + baseVersion + contentHash).slice(0, 32)`.
 
-### Server merge fallback
+### Merging (0.4.15: always on this device)
 
-The plugin pushes with `/v/{baseVersion}`. If the server answers with the merged note, that is written back.
-If the server refuses (405/409/440), the plugin fetches the base version from `/v/{base}`, merges locally
-(`src/merge.ts`: line-level diff3, character-level inside conflicting regions, never drops text) and
-posts again against the current version.
+The plugin pushes with `/v/{baseVersion}`. If the re-read right before the push shows that Simplenote moved
+past that version, the plugin fetches the base from `/v/{base}`, merges locally (`src/merge.ts`: line-level
+diff3 with line endings compared as `\n`, character-level inside small conflicting regions, shared lines kept
+once inside large ones, never drops text) and posts the result against the current version. If the base is
+no longer in Simplenote's history, the lines of both versions are kept, shared lines once
+(`mergeWithoutBase`). The same happens if the server refuses a POST (405/409/440). A note the server still
+answers with merged text (a push that raced another device) is written back.
+
+**Why not let the server merge (as up to 0.4.14):** it applies a stale-base POST as a patch, so text it
+already has is added again. On 2026-11-07 "Lacan the Mind of the Modernist" had been saved with LF line
+endings on Simplenote while its base version had CRLF; every line of the edit differed from the base, so
+each stale push made the server insert the whole body again. The note grew to 11 identical copies
+(34 KB → 368 KB) until Simplenote refused it with HTTP 413, which the owner saw as "refused as too large".
 
 ## Live check results (`npm run itest`, 2026-10-12, dedicated test account)
 
@@ -91,7 +100,8 @@ posts again against the current version.
   1. Every sync pulls first; a local edit whose content already equals the server copy is adopted, not pushed.
   2. Immediately before each push the plugin re-reads the note. If the server version moved and the server
      content equals what the plugin wants to push, it adopts that version and skips the push. If the content
-     differs, the push goes ahead against the old base and the server merges.
+     differs, the plugin merges locally and pushes against the current version (since 0.4.15; before, the
+     push went ahead against the old base and the server merged, see "Merging" above).
   3. The deterministic ccid is still sent (harmless) in case the server starts honoring it.
   Residual risk: another device pushing the identical edit in the fraction of a second between that
   re-read and the POST would still duplicate lines. No text is lost in that case.

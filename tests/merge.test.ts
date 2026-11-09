@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyChanges, mergeStrings } from '../src/merge';
+import { applyChanges, mergeStrings, mergeWithoutBase } from '../src/merge';
 
 describe('mergeStrings', () => {
 	it('returns the other side when one side is unchanged', () => {
@@ -47,6 +47,30 @@ describe('mergeStrings', () => {
 	});
 	it('identical edits are not duplicated', () => {
 		expect(mergeStrings('a\nb', 'a\nz', 'a\nz')).toBe('a\nz');
+	});
+	it('a base with CRLF line endings does not make every line a conflict', () => {
+		const base = 'T\r\none\r\ntwo\r\nthree';
+		expect(mergeStrings(base, 'T\none\ntwo\nthree\nadded', 'T\none\ntwo\nthree')).toBe('T\none\ntwo\nthree\nadded');
+		expect(mergeStrings(base, 'T\nONE\ntwo\nthree', 'T\none\ntwo\nTHREE')).toBe('T\nONE\ntwo\nTHREE');
+	});
+	it('a large conflicting region keeps shared lines once instead of both whole blocks', () => {
+		const lines = Array.from({ length: 300 }, (_, i) => `line ${i} ${'x'.repeat(30)}`);
+		const base = lines.map((l) => `${l} old`).join('\n');
+		const a = [...lines.slice(0, 150), 'ours', ...lines.slice(150)].join('\n');
+		const b = [...lines, 'theirs'].join('\n');
+		const m = mergeStrings(base, a, b);
+		expect(m.split('\n').filter((l) => l === lines[10])).toHaveLength(1);
+		expect(m).toContain('ours');
+		expect(m).toContain('theirs');
+		expect(m.split('\n')).toHaveLength(302);
+	});
+});
+
+describe('mergeWithoutBase', () => {
+	it('keeps the lines of both sides, shared lines once', () => {
+		expect(mergeWithoutBase('a\nb\nc', 'a\nc\nd')).toBe('a\nb\nc\nd');
+		expect(mergeWithoutBase('a\r\nb', 'a\nb')).toBe('a\nb');
+		expect(mergeWithoutBase('same', 'same')).toBe('same');
 	});
 });
 
