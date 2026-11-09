@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CONFLICT_SETTLE_MS, NEW_FILE_WAIT_MS, SUSPICIOUS_WAIT_MS } from '../src/sync';
+import { CONFLICT_SETTLE_MS, NEW_FILE_WAIT_MS, RENAME_CONFIRM_MS, SUSPICIOUS_WAIT_MS } from '../src/sync';
 import { makeHarness, logText } from './harness';
 import { MemoryVault } from './memory-vault';
 
@@ -746,13 +746,76 @@ describe('iCloud for Windows conflict names', () => {
 		expect(h.store.load().notes.a?.path).toBe('F/Note.md');
 		expect(h.store.load().keptTitles.a).toBeUndefined();
 		expect(h.store.load().pausedPaths).toEqual([]);
-		expect(h.notices.some((n) => n.includes('its name is back'))).toBe(true);
+		// reported only once the name has held
+		expect(h.notices.some((n) => n.includes('its name is back'))).toBe(false);
+		h.advance(RENAME_CONFIRM_MS);
+		await h.engine.sync();
+		expect(h.notices.filter((n) => n.includes('its name is back'))).toHaveLength(1);
 		// nothing changed on Simplenote, and nothing is left to do
 		expect(h.server.version('a')).toBe(version);
 		expect(h.server.get('a')?.deleted).toBe(false);
 		const again = await h.engine.sync();
 		expect(again.pulled + again.pushed + again.trashed).toBe(0);
 		expect(h.server.version('a')).toBe(version);
+	});
+
+	// 2026-10-29 21:31: the rename back held for less than a minute; iCloud put "Note 2.md" back with its own text
+	const renameBackThenUndo = async (h: H, typedMeanwhile: boolean) => {
+		await splitByICloud(h, '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two');
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		expect(h.vault.has('F/Note.md')).toBe(true);
+		if (typedMeanwhile) {
+			h.vault.put('F/Note.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two edited\nline three');
+			await h.engine.sync();
+			expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two edited\nline three');
+		}
+		h.advance(30 * 1000);
+		await h.vault.rename('F/Note.md', 'F/Note 2.md');
+		h.vault.put('F/Note 2.md', '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two edited');
+		await h.engine.sync();
+	};
+
+	it('a rename back undone by the vault sync is reported, not claimed, and not tried again', async () => {
+		const h = await synced();
+		await renameBackThenUndo(h, false);
+		for (let i = 0; i < 4; i++) {
+			h.advance(RENAME_CONFIRM_MS);
+			await h.engine.sync();
+		}
+		expect(h.vault.has('F/Note 2.md')).toBe(true);
+		expect(h.vault.has('F/Note.md')).toBe(false);
+		expect(h.notices.some((n) => n.includes('its name is back'))).toBe(false);
+		expect(h.notices.filter((n) => n.includes('iCloud undid the rename'))).toHaveLength(1);
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two edited');
+		// renamed by hand: synced under that name as usual
+		await h.vault.rename('F/Note 2.md', 'F/Note.md');
+		await h.engine.sync();
+		expect(h.store.load().keptTitles.a).toBeUndefined();
+		expect(h.store.load().renamedBack.a).toBeUndefined();
+	});
+
+	it('older text put back by the vault sync does not overwrite what was typed under the kept name', async () => {
+		const h = await synced();
+		await renameBackThenUndo(h, true);
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two edited\nline three');
+		expect(h.vault.get('F/Note 2.md')).toContain('line three');
+		expect(h.store.load().keptTitles.a).toBe('Note');
+		const again = await h.engine.sync();
+		expect(again.pushed).toBe(0);
+		expect(h.server.get('a')?.content).toBe('Note\nline one edited\nline two edited\nline three');
+	});
+
+	it('a copy that differs only in trailing whitespace counts as known text', async () => {
+		const h = await synced();
+		await splitByICloud(h, '---\nsimplenote-id: a\ntags:\n  - todo\n---\nline one edited\nline two\n\n');
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		h.advance(CONFLICT_SETTLE_MS);
+		await h.engine.sync();
+		expect(h.vault.trashed.map((t) => t.path)).toEqual(['F/Note(1).md']);
 	});
 
 	it('a conflict copy with text that is nowhere on Simplenote is left to merge by hand', async () => {
