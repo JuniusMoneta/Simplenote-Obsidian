@@ -54,12 +54,25 @@ export interface SyncState {
 	trashedByMe: Record<string, string>;
 	/** Notes whose file has a conflict-copy name ("Note 2.md", "Note(1).md"): id -> the title the note keeps while it does. */
 	keptTitles: Record<string, string>;
+	/** Conflict copies this device renamed back to the kept name, until the rename has held for `RENAME_CONFIRM_MS` or was undone by the vault sync. */
+	renamedBack: Record<string, RenamedBack>;
 	/** One-time migration of the pinned property into bookmarks done. */
 	pinnedMigrated: boolean;
 	backupDone: boolean;
 	firstRunDone: boolean;
 	lastFullReconcile: number;
 	lastSync: number;
+}
+
+export interface RenamedBack {
+	/** The kept name the copy was renamed back to. */
+	target: string;
+	at: number;
+	/** The vault sync put the copy name back: the rename is not tried again for this note. */
+	undone?: boolean;
+	/** Copies trashed and copies left to merge, reported once the rename holds. */
+	trashed: number;
+	left: number;
 }
 
 export function emptyState(): SyncState {
@@ -75,6 +88,7 @@ export function emptyState(): SyncState {
 		problems: {},
 		trashedByMe: {},
 		keptTitles: {},
+		renamedBack: {},
 		pinnedMigrated: false,
 		backupDone: false,
 		firstRunDone: false,
@@ -115,6 +129,7 @@ export function normalizeState(raw: unknown): SyncState {
 	if (r.problems && typeof r.problems === 'object') s.problems = { ...r.problems };
 	if (r.trashedByMe && typeof r.trashedByMe === 'object') s.trashedByMe = { ...r.trashedByMe };
 	if (r.keptTitles && typeof r.keptTitles === 'object') s.keptTitles = { ...r.keptTitles };
+	if (r.renamedBack && typeof r.renamedBack === 'object') s.renamedBack = { ...r.renamedBack };
 	s.pinnedMigrated = r.pinnedMigrated === true;
 	s.backupDone = r.backupDone === true;
 	s.firstRunDone = r.firstRunDone === true;

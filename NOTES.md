@@ -238,6 +238,19 @@ Within fifteen minutes:
    copy with the same id goes to the Obsidian trash only when its body and tags equal one of the note's last
    `CONFLICT_HISTORY_DEPTH` (25) Simplenote versions, otherwise it stays paused for the owner. Never on standby,
    on the takeover sync, in dry run, or when a file under the kept name exists again.
+11. **The rename back was claimed but undone (0.4.14).** On 2026-10-29 at 21:29 PT (0.4.13), while "Lifeline
+   Learning - Course 3, Assessing Safety (10.25)" was being typed on Windows, iCloud split it into `… 2.md` and
+   `…(1).md` again. At 21:31:34 the plugin renamed `… 2.md` back and announced "its name is back"; by 21:32:28
+   iCloud had put `… 2.md` back (its own mtime, 21:28:54) and the kept name was gone, so the next pass would rename
+   and announce again, and anything typed under the kept name in between would be replaced by iCloud's older text
+   and then pushed over Simplenote. `…(1).md` was also kept as "text not found on Simplenote", although it
+   differed from v8 only in trailing whitespace. Rules: a rename back is recorded (`renamedBack`) and announced
+   only after the kept name has held for `RENAME_CONFIRM_MS` (2 min); when the copy name comes back the owner is
+   told once and the note is not renamed again until its file is renamed by hand (or `RENAME_MEMORY_MS`, 1 h,
+   passes); a copy put back with text from the note's Simplenote history is overwritten with Simplenote's current
+   text instead of being pushed; conflict copies are compared ignoring trailing whitespace. The plugin cannot stop
+   iCloud for Windows from splitting a file that is being typed into; only keeping the Windows vault out of iCloud
+   Drive does.
 
 Repair was done by hand on the Windows copy of the vault (duplicates compared body by body, the newest
 body kept, the stored `simplenote-title` kept, copies moved to `.trash/repair-20261012`), the nine notes

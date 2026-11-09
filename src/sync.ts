@@ -32,7 +32,7 @@ import {
 import { LEASE_NOTE_ID, type PushLease } from './lease';
 import { matchFirstRun, removeTitleLine, type FirstRunDecision, type FirstRunProposal, type LocalCandidate, type RemoteCandidate } from './firstrun';
 import { AuthError, SimperiumClient, SimperiumError, type IndexEntry, type NoteData } from './simperium';
-import type { NoteState, StateStore, SyncProblem, SyncState } from './state';
+import type { NoteState, RenamedBack, StateStore, SyncProblem, SyncState } from './state';
 import type { BookmarkAdapter, FileInfo, VaultAdapter } from './vault';
 
 export const NEW_FILE_WAIT_MS = 2 * 60 * 1000;
@@ -44,6 +44,10 @@ export const SHARED_VAULT_VANISH_WAIT_MS = 10 * 60 * 1000;
 export const FULL_RECONCILE_MS = 24 * 60 * 60 * 1000;
 /** Conflict copies of a note must stay unchanged this long before the synced copy gets its name back. */
 export const CONFLICT_SETTLE_MS = 30 * 1000;
+/** A conflict copy renamed back is reported as fixed only once the kept name has held this long. */
+export const RENAME_CONFIRM_MS = 2 * 60 * 1000;
+/** How long a rename back is remembered, so a copy name the vault sync puts back is not renamed again and again. */
+export const RENAME_MEMORY_MS = 60 * 60 * 1000;
 /** How many versions back the Simplenote history is searched for the text of a surplus conflict copy. */
 export const CONFLICT_HISTORY_DEPTH = 25;
 export const GUARD_LIMITS = { trash: 10, move: 20, change: 50 };
@@ -982,6 +986,11 @@ export class SyncEngine {
 			} else if (localHash === st.contentHash && !tagUpdate) {
 				actions.push(this.updateLocalAction(lf, id, data, version, ctx));
 			} else {
+				const refresh = await this.copyPutBackAction(lf, st);
+				if (refresh) {
+					actions.push(refresh);
+					continue;
+				}
 				const a = this.pushAction(lf, note, id, st.version, data, st, st.version !== version);
 				if (tagUpdate && localHash === st.contentHash) a.group = tagUpdate;
 				actions.push(a);
@@ -1014,6 +1023,12 @@ export class SyncEngine {
 						st.mtime = lf.info.mtime;
 						st.size = lf.info.size;
 						delete st.recheck;
+						continue;
+					}
+					const refresh = await this.copyPutBackAction(lf, st);
+					if (refresh) {
+						actions.push(refresh);
+						handled.add(lf.id);
 						continue;
 					}
 					if (note.body.trim().length === 0 && st.size > lf.info.size) {
@@ -1367,6 +1382,46 @@ export class SyncEngine {
 		};
 	}
 
+	/**
+	 * The vault sync undid a rename back and put the copy back with its own text (2026-10-29 21:32). When that text
+	 * is an older version of the note, Simplenote's text is written into the copy instead of the older text being
+	 * pushed over what was typed under the kept name. Null when this is not such a copy, or its text is new.
+	 */
+	private async copyPutBackAction(lf: LocalFile, st: NoteState): Promise<Action | null> {
+		const back = this.state.renamedBack[st.id];
+		if (!back || back.undone || nameKey(st.path) !== nameKey(back.target) || nameKey(lf.info.path) === nameKey(back.target) || this.vault.exists(back.target)) return null;
+		if ((await this.findInHistory(st.id, new Set([await this.copyHash(lf, lf.note as LocalNote)]))).size === 0) {
+			this.log.warn(`${lf.info.path}: put back by the vault sync with text that is not on Simplenote; pushing it, version ${st.version} stays in the Simplenote history`);
+			return null;
+		}
+		return this.refreshUndoneCopyAction(lf, st.id, back);
+	}
+
+	private refreshUndoneCopyAction(lf: LocalFile, id: string, back: RenamedBack): Action {
+		return {
+			kind: 'update-local',
+			category: 'change',
+			path: lf.info.path,
+			id,
+			describe: `update ${lf.info.path} from Simplenote (the vault sync put back an older copy)`,
+			run: async () => {
+				const got = await this.client.getNote(id);
+				if (!got) return;
+				const kept = basenameOfPath(back.target);
+				const content = this.localContentFor(got.data);
+				const text = noteToFileText({ ...got.data, content }, id, kept, this.settingsFn().tagStyle ?? 'inline', !this.bookmarksAvailable()).text;
+				if (this.dryRun) {
+					this.log.info(`[dry-run] update ${lf.info.path} from Simplenote`);
+					return;
+				}
+				const info = await this.vault.write(lf.info.path, text, { mtime: noteTimes(got.data).mtime });
+				await this.writeState(id, lf.info.path, text, got.version, got.data, info);
+				this.state.keptTitles[id] = kept;
+				this.log.info(`updated ${lf.info.path} from Simplenote v${got.version}: the vault sync had put back an older copy`);
+			},
+		};
+	}
+
 	/** Writes remote data into an existing file, renaming or moving it when title or folder changed. */
 	private async writeLocal(path: string, id: string, data: NoteData, version: number, ctx: { taken: Set<string>; folders: string[] }): Promise<void> {
 		const title = splitContent(data.content).title;
@@ -1495,8 +1550,13 @@ export class SyncEngine {
 	 * stayed the same for `CONFLICT_SETTLE_MS`, the synced copy gets its kept name back, and the other copies of the
 	 * same note go to the Obsidian trash when their text is already in the note's Simplenote history. A copy whose
 	 * text is found nowhere stays, paused, for the owner to merge. Runs on the device that syncs the vault only.
+	 *
+	 * iCloud can undo the rename a minute later (2026-10-29 21:31): the copy name comes back with iCloud's text, and
+	 * whatever was typed under the kept name in between is gone. So the rename is reported only once it has held for
+	 * `RENAME_CONFIRM_MS`, and a note whose rename was undone is not renamed again until its file is renamed by hand.
 	 */
 	private async restoreConflictCopyNames(now: number): Promise<void> {
+		this.confirmRenamesBack(now);
 		const waiting = new Set<string>();
 		const files = this.vault.listMarkdownFiles();
 		for (const [id, kept] of Object.entries(this.state.keptTitles)) {
@@ -1504,6 +1564,14 @@ export class SyncEngine {
 			if (!st || !isConflictCopyName(kept, basenameOfPath(st.path))) continue;
 			const folder = folderOfPath(st.path);
 			const target = joinPath(folder, kept);
+			const back = this.state.renamedBack[id];
+			if (back && !back.undone && nameKey(back.target) === nameKey(target)) {
+				back.undone = true;
+				this.log.warn(`${target}: the vault sync undid the rename back to this name; the note stays in ${st.path} and is not renamed again`);
+				this.deps.notice(
+					`Simplenote: iCloud undid the rename of "${basenameOfPath(st.path)}" back to "${kept}". The note is complete in "${basenameOfPath(st.path)}" and on Simplenote; it will not be renamed again. Rename it by hand once you have stopped editing it.`,
+				);
+			}
 			const cur = this.vault.stat(st.path);
 			// a pending edit is pushed first; a file under the old name (back, or not readable yet) is left alone
 			if (!cur || cur.mtime !== st.mtime || cur.size !== st.size || this.vault.exists(target)) continue;
@@ -1529,34 +1597,58 @@ export class SyncEngine {
 			}
 			const known = surplus.size > 0 ? await this.findInHistory(id, new Set(surplus.values())) : new Set<string>();
 
-			await this.vault.rename(st.path, target);
-			const info = this.vault.stat(target);
-			this.log.info(`${st.path}: name made by the vault sync; renamed back to ${target}`);
-			st.path = target;
-			if (info) {
-				st.mtime = info.mtime;
-				st.size = info.size;
+			const undone = this.state.renamedBack[id]?.undone === true;
+			if (!undone) {
+				await this.vault.rename(st.path, target);
+				const info = this.vault.stat(target);
+				this.log.info(`${st.path}: name made by the vault sync; renamed back to ${target}, checking that it holds`);
+				st.path = target;
+				if (info) {
+					st.mtime = info.mtime;
+					st.size = info.size;
+				}
+				delete this.state.keptTitles[id];
 			}
-			delete this.state.keptTitles[id];
 			this.conflictCopiesSeen.delete(id);
 			let trashed = 0;
 			for (const [path, hash] of surplus) {
 				if (!known.has(hash)) {
-					this.log.warn(`${path} is a copy of ${target} with text not found on Simplenote; left for you to merge by hand`);
+					this.log.warn(`${path} is a copy of ${st.path} with text not found on Simplenote; left for you to merge by hand`);
 					continue;
 				}
 				await this.vault.trash(path);
 				this.state.pausedPaths = this.state.pausedPaths.filter((p) => nameKey(p) !== nameKey(path));
 				delete this.state.problems[path];
-				this.log.info(`trashed ${path} (older copy of ${target}, its text is in the Simplenote history)`);
+				this.log.info(`trashed ${path} (older copy of ${st.path}, its text is in the Simplenote history)`);
 				trashed++;
 			}
-			const left = surplus.size - trashed;
-			this.deps.notice(
-				`Simplenote: the vault sync renamed "${kept}"; its name is back${trashed > 0 ? `, ${trashed} older copy(ies) moved to the trash` : ''}${left > 0 ? `, ${left} copy(ies) with other text left to merge by hand` : ''}.`,
-			);
+			if (!undone) this.state.renamedBack[id] = { target, at: now, trashed, left: surplus.size - trashed };
+			else if (trashed > 0) this.deps.notice(`Simplenote: ${trashed} older copy(ies) of "${basenameOfPath(st.path)}" moved to the trash.`);
 		}
 		for (const id of [...this.conflictCopiesSeen.keys()]) if (!waiting.has(id)) this.conflictCopiesSeen.delete(id);
+	}
+
+	/** A rename back is reported once it has held for `RENAME_CONFIRM_MS`; it is remembered until the file is renamed by hand or for `RENAME_MEMORY_MS`. */
+	private confirmRenamesBack(now: number): void {
+		for (const [id, back] of Object.entries(this.state.renamedBack)) {
+			const st = this.state.notes[id];
+			if (!st || (back.undone && this.state.keptTitles[id] === undefined)) {
+				delete this.state.renamedBack[id];
+				continue;
+			}
+			if (back.undone) continue;
+			if (now - Math.abs(back.at) >= RENAME_MEMORY_MS) {
+				delete this.state.renamedBack[id];
+				continue;
+			}
+			if (back.at > 0 && now - back.at >= RENAME_CONFIRM_MS && nameKey(st.path) === nameKey(back.target) && this.vault.exists(back.target)) {
+				this.deps.notice(
+					`Simplenote: the vault sync renamed "${basenameOfPath(back.target)}"; its name is back${back.trashed > 0 ? `, ${back.trashed} older copy(ies) moved to the trash` : ''}${back.left > 0 ? `, ${back.left} copy(ies) with other text left to merge by hand` : ''}.`,
+				);
+				this.log.info(`${back.target}: the name has held for ${RENAME_CONFIRM_MS / 1000} s`);
+				back.at = -back.at; // reported
+			}
+		}
 	}
 
 	/** The subset of `hashes` (see `copyHash`) found among the latest `CONFLICT_HISTORY_DEPTH` versions of a note. */
@@ -1573,14 +1665,14 @@ export class SyncEngine {
 		return found;
 	}
 
-	/** Copies in one folder differ in file name, hence in title: they are compared by body and tags only. */
+	/** Copies in one folder differ in file name, hence in title: they are compared by body and tags only, ignoring trailing whitespace. */
 	private copyHash(lf: LocalFile, note: LocalNote): Promise<string> {
-		const body = splitContent(this.remoteContentFor(lf, note)).body;
+		const body = splitContent(this.remoteContentFor(lf, note)).body.trimEnd();
 		return noteHash(`\n${body}`, this.localTags(lf, note).map(tagKey), false);
 	}
 
 	private remoteCopyHash(data: NoteData): Promise<string> {
-		return noteHash(`\n${splitContent(data.content).body}`, data.tags.map(tagKey), false);
+		return noteHash(`\n${splitContent(data.content).body.trimEnd()}`, data.tags.map(tagKey), false);
 	}
 
 	/**
